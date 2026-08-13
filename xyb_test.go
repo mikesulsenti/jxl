@@ -48,3 +48,21 @@ func TestXYBForwardInvertsApply(t *testing.T) {
 		t.Logf("intensity %g: round trip within %g", target, worst)
 	}
 }
+
+func TestSRGBToLinearInverts(t *testing.T) {
+	var worst float64
+
+	for i := range 65536 {
+		v := float32(i) / 65535
+
+		if d := math.Abs(float64(linearToSRGB(srgbToLinear(v)) - v)); d > worst {
+			worst = d
+		}
+	}
+
+	if worst > 1e-4 {
+		t.Fatalf("round trip is %g off", worst)
+	}
+
+	t.Logf("sRGB round trip within %g", worst)
+}

@@ -2,6 +2,8 @@ package jxl
 
 import (
 	"bytes"
+	"image"
+	"image/color"
 	"image/png"
 	"math"
 	"math/rand/v2"
@@ -184,10 +186,13 @@ func TestEncodeAgainstLibjxl(t *testing.T) {
 	for _, dims := range [][2]int{{64, 48}, {17, 9}, {120, 96}} {
 		w, h := dims[0], dims[1]
 
-		data, err := encodeVarDCTImage(gradientRGB(w, h), w, h, 200)
-		if err != nil {
+		var buf bytes.Buffer
+
+		if err := Encode(&buf, testImage(w, h)); err != nil {
 			t.Fatalf("%v: encode gave %v", dims, err)
 		}
+
+		data := buf.Bytes()
 
 		src := filepath.Join(dir, "ours.jxl")
 		dst := filepath.Join(dir, "ours.png")
@@ -245,5 +250,94 @@ func TestEncodeAgainstLibjxl(t *testing.T) {
 		if worst > 0.005 {
 			t.Fatalf("%v: libjxl and we disagree by %g", dims, worst)
 		}
+	}
+}
+
+func testImage(w, h int) *image.NRGBA {
+	m := image.NewNRGBA(image.Rect(0, 0, w, h))
+
+	for y := range h {
+		for x := range w {
+			m.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(60 + 150*x/max(w-1, 1)),
+				G: uint8(60 + 150*y/max(h-1, 1)),
+				B: uint8(128 + 60*((x/8+y/8)%2)),
+				A: 255,
+			})
+		}
+	}
+
+	return m
+}
+
+func TestEncodeImage(t *testing.T) {
+	for _, dims := range [][2]int{{64, 48}, {31, 17}, {8, 8}} {
+		w, h := dims[0], dims[1]
+
+		src := testImage(w, h)
+
+		var buf bytes.Buffer
+
+		if err := Encode(&buf, src); err != nil {
+			t.Fatalf("%v: encode gave %v", dims, err)
+		}
+
+		got, err := Decode(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			t.Fatalf("%v: decode gave %v", dims, err)
+		}
+
+		if got.Bounds() != src.Bounds() {
+			t.Fatalf("%v: decoded %v", dims, got.Bounds())
+		}
+
+		var worst float64
+
+		for y := range h {
+			for x := range w {
+				r1, g1, b1, _ := src.At(x, y).RGBA()
+				r2, g2, b2, _ := got.At(x, y).RGBA()
+
+				for _, d := range [3]float64{
+					math.Abs(float64(r1) - float64(r2)),
+					math.Abs(float64(g1) - float64(g2)),
+					math.Abs(float64(b1) - float64(b2)),
+				} {
+					worst = math.Max(worst, d/65535)
+				}
+			}
+		}
+
+		t.Logf("%v: %d bytes, worst error %.5f", dims, buf.Len(), worst)
+
+		if worst > 0.03 {
+			t.Fatalf("%v: reconstruction is %g from the source", dims, worst)
+		}
+	}
+}
+
+func TestEncodeQualityAffectsSize(t *testing.T) {
+	src := testImage(64, 48)
+
+	var prev int
+
+	for _, q := range []int{20, 50, 90, 100} {
+		var buf bytes.Buffer
+
+		if err := Encode(&buf, src, EncodeOptions{Quality: q}); err != nil {
+			t.Fatalf("quality %d: %v", q, err)
+		}
+
+		if _, err := Decode(bytes.NewReader(buf.Bytes())); err != nil {
+			t.Fatalf("quality %d: decode gave %v", q, err)
+		}
+
+		t.Logf("quality %d: %d bytes", q, buf.Len())
+
+		if buf.Len() <= prev {
+			t.Fatalf("quality %d gave %d bytes, not more than %d", q, buf.Len(), prev)
+		}
+
+		prev = buf.Len()
 	}
 }

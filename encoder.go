@@ -1,5 +1,10 @@
 package jxl
 
+import (
+	"image"
+	"io"
+)
+
 func encodeFilter() restorationFilter {
 	f := defaultRestorationFilter()
 	f.gab = false
@@ -205,4 +210,71 @@ func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32) ([]byte, error) 
 	}
 
 	return out.bytes(), nil
+}
+
+// EncodeOptions controls the encoder. The zero value is a reasonable default.
+type EncodeOptions struct {
+	// Quality runs from 1 to 100. Zero means DefaultQuality.
+	Quality int
+}
+
+// DefaultQuality is the quality used when EncodeOptions.Quality is zero.
+const DefaultQuality = 90
+
+func encodeOptions(opts []EncodeOptions) EncodeOptions {
+	var o EncodeOptions
+
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+
+	if o.Quality == 0 {
+		o.Quality = DefaultQuality
+	}
+
+	return o
+}
+
+func qualityToQuant(q int) int32 {
+	q = min(max(q, 1), 100)
+
+	return int32(min(max(int(powf(float32(q)/100, 3)*255)+1, 1), 256))
+}
+
+// Encode writes m as a JPEG XL codestream. Colour is treated as sRGB.
+func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
+	o := encodeOptions(opts)
+
+	b := m.Bounds()
+	width, height := b.Dx(), b.Dy()
+
+	if width <= 0 || height <= 0 {
+		return ErrInvalid
+	}
+
+	var rgb [3][]float32
+
+	for c := range 3 {
+		rgb[c] = make([]float32, width*height)
+	}
+
+	for y := range height {
+		for x := range width {
+			r, g, bl, _ := m.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			i := y*width + x
+
+			rgb[0][i] = srgbToLinear(float32(r) / 65535)
+			rgb[1][i] = srgbToLinear(float32(g) / 65535)
+			rgb[2][i] = srgbToLinear(float32(bl) / 65535)
+		}
+	}
+
+	data, err := encodeVarDCTImage(rgb, width, height, qualityToQuant(o.Quality))
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(data)
+
+	return err
 }

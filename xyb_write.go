@@ -63,3 +63,17 @@ func (f *xybForward) apply(r, g, b float32) (float32, float32, float32) {
 
 	return (l - m) / 2, (l + m) / 2, s
 }
+
+func srgbToLinear(v float32) float32 {
+	sign := float32(1)
+
+	if v < 0 {
+		sign, v = -1, -v
+	}
+
+	if v <= 0.04045 {
+		return sign * v / 12.92
+	}
+
+	return sign * float32(math.Pow((float64(v)+0.055)/1.055, 2.4))
+}
