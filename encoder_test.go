@@ -322,6 +322,16 @@ func TestEncodeImage(t *testing.T) {
 	}
 }
 
+func TestLinearFrom16MatchesDirect(t *testing.T) {
+	for v := range uint32(65536) {
+		want := srgbToLinear(float32(v) / 65535)
+
+		if got := linearFrom16(v); got != want {
+			t.Fatalf("linearFrom16(%d) is %v, want %v", v, got, want)
+		}
+	}
+}
+
 func encodeDecode(t *testing.T, src image.Image) (image.Image, int) {
 	t.Helper()
 

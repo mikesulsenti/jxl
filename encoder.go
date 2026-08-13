@@ -465,6 +465,84 @@ func qualityToQuant(q int) int32 {
 	return int32(min(max(int(powf(float32(q)/100, 3)*255)+1, 1), 256))
 }
 
+var srgb8Linear = func() (t [256]float32) {
+	for i := range t {
+		t[i] = srgbToLinear(float32(i*257) / 65535)
+	}
+
+	return t
+}()
+
+func linearFrom16(v uint32) float32 {
+	if v>>8 == v&0xff {
+		return srgb8Linear[v>>8]
+	}
+
+	return srgbToLinear(float32(v) / 65535)
+}
+
+func fillLinear(rgb *[3][]float32, width, height int, at func(x, y int) (uint32, uint32, uint32)) {
+	for y := range height {
+		for x := range width {
+			r, g, b := at(x, y)
+			i := y*width + x
+
+			rgb[0][i] = linearFrom16(r)
+			rgb[1][i] = linearFrom16(g)
+			rgb[2][i] = linearFrom16(b)
+		}
+	}
+}
+
+func imageToLinear(m image.Image, rgb *[3][]float32, width, height int) {
+	b := m.Bounds()
+
+	switch src := m.(type) {
+	case *image.NRGBA:
+		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+			r, g, bl, _ := src.NRGBAAt(b.Min.X+x, b.Min.Y+y).RGBA()
+
+			return r, g, bl
+		})
+	case *image.RGBA:
+		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+			r, g, bl, _ := src.RGBAAt(b.Min.X+x, b.Min.Y+y).RGBA()
+
+			return r, g, bl
+		})
+	case *image.NRGBA64:
+		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+			r, g, bl, _ := src.NRGBA64At(b.Min.X+x, b.Min.Y+y).RGBA()
+
+			return r, g, bl
+		})
+	case *image.RGBA64:
+		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+			r, g, bl, _ := src.RGBA64At(b.Min.X+x, b.Min.Y+y).RGBA()
+
+			return r, g, bl
+		})
+	case *image.Gray:
+		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+			r, g, bl, _ := src.GrayAt(b.Min.X+x, b.Min.Y+y).RGBA()
+
+			return r, g, bl
+		})
+	case *image.YCbCr:
+		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+			r, g, bl, _ := src.YCbCrAt(b.Min.X+x, b.Min.Y+y).RGBA()
+
+			return r, g, bl
+		})
+	default:
+		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+			r, g, bl, _ := m.At(b.Min.X+x, b.Min.Y+y).RGBA()
+
+			return r, g, bl
+		})
+	}
+}
+
 // Encode writes m as a JPEG XL codestream. Colour is treated as sRGB.
 func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 	o := encodeOptions(opts)
@@ -482,16 +560,7 @@ func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 		rgb[c] = make([]float32, width*height)
 	}
 
-	for y := range height {
-		for x := range width {
-			r, g, bl, _ := m.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			i := y*width + x
-
-			rgb[0][i] = srgbToLinear(float32(r) / 65535)
-			rgb[1][i] = srgbToLinear(float32(g) / 65535)
-			rgb[2][i] = srgbToLinear(float32(bl) / 65535)
-		}
-	}
+	imageToLinear(m, &rgb, width, height)
 
 	data, err := encodeVarDCTImage(rgb, width, height, qualityToQuant(o.Quality))
 	if err != nil {
