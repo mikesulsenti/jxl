@@ -341,3 +341,145 @@ func TestEncodeQualityAffectsSize(t *testing.T) {
 		prev = buf.Len()
 	}
 }
+
+func texturedImage(w, h int) *image.NRGBA {
+	m := image.NewNRGBA(image.Rect(0, 0, w, h))
+
+	for y := range h {
+		for x := range w {
+			fx, fy := float64(x), float64(y)
+
+			r := 0.5 + 0.3*math.Sin(fx/7.3) + 0.15*math.Sin(fy/3.1+1)
+			g := 0.5 + 0.25*math.Sin((fx+fy)/5.7) + 0.2*math.Cos(fx/11.9)
+			b := 0.5 + 0.3*math.Cos(fy/4.3) + 0.15*math.Sin((fx-fy)/9.1)
+
+			m.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(math.Round(min(max(r, 0), 1) * 255)),
+				G: uint8(math.Round(min(max(g, 0), 1) * 255)),
+				B: uint8(math.Round(min(max(b, 0), 1) * 255)),
+				A: 255,
+			})
+		}
+	}
+
+	return m
+}
+
+func maxError(a, b image.Image) float64 {
+	worst := 0.0
+	r := a.Bounds()
+
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			r1, g1, b1, _ := a.At(x, y).RGBA()
+			r2, g2, b2, _ := b.At(x, y).RGBA()
+
+			for _, d := range [3]float64{
+				math.Abs(float64(r1) - float64(r2)),
+				math.Abs(float64(g1) - float64(g2)),
+				math.Abs(float64(b1) - float64(b2)),
+			} {
+				worst = math.Max(worst, d/65535)
+			}
+		}
+	}
+
+	return worst
+}
+
+func TestEncodeAgainstCjxl(t *testing.T) {
+	cjxl, err := exec.LookPath("cjxl")
+	if err != nil {
+		t.Skip("cjxl is not on the path")
+	}
+
+	dir := t.TempDir()
+	src := texturedImage(128, 96)
+
+	png0 := filepath.Join(dir, "src.png")
+
+	f, err := os.Create(png0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := png.Encode(f, src); err != nil {
+		t.Fatal(err)
+	}
+
+	f.Close()
+
+	type point struct {
+		bytes int
+		err   float64
+	}
+
+	var (
+		curve []point
+		worst float64
+	)
+
+	for q := 5; q <= 100; q += 5 {
+		var buf bytes.Buffer
+
+		if err := Encode(&buf, src, EncodeOptions{Quality: q}); err != nil {
+			t.Fatalf("quality %d: %v", q, err)
+		}
+
+		got, err := Decode(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			t.Fatalf("quality %d: %v", q, err)
+		}
+
+		curve = append(curve, point{buf.Len(), maxError(src, got)})
+	}
+
+	match := func(target float64) point {
+		best := curve[0]
+
+		for _, p := range curve {
+			if p.err <= target && p.bytes < best.bytes {
+				best = p
+			}
+
+			if best.err > target && p.err < best.err {
+				best = p
+			}
+		}
+
+		return best
+	}
+
+	for _, dist := range []string{"1.0", "3.0", "6.0"} {
+		out := filepath.Join(dir, "cjxl-"+dist+".jxl")
+
+		cmd := exec.Command(cjxl, png0, out, "-d", dist, "--quiet")
+
+		if o, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cjxl -d %s failed: %v\n%s", dist, err, o)
+		}
+
+		data, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		theirs, err := Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("we could not decode cjxl -d %s: %v", dist, err)
+		}
+
+		e := maxError(src, theirs)
+		ours := match(e)
+		ratio := float64(ours.bytes) / float64(len(data))
+
+		t.Logf("cjxl -d %s: %d bytes at %.5f; ours %d bytes at %.5f (%.1fx)",
+			dist, len(data), e, ours.bytes, ours.err, ratio)
+
+		worst = math.Max(worst, ratio)
+	}
+
+	if worst > 8 {
+		t.Fatalf("we are %.1fx larger than cjxl at matched distortion, ratchet is 8x", worst)
+	}
+}
