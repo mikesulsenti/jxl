@@ -161,3 +161,221 @@ func (v *varDCT) walkACGroup(rc rect, s *dctScratch, pass int, shift uint32, his
 
 	return nil
 }
+
+func (l *lfQuantFactors) write(w *bitWriter) {
+	if l.factors == lfQuantDefault {
+		w.bit(true)
+
+		return
+	}
+
+	w.bit(false)
+
+	for _, v := range l.factors {
+		if v < 1e-8 {
+			w.setErr(ErrInvalid)
+
+			return
+		}
+
+		w.f16(v * 128)
+	}
+}
+
+func (q *quantizerParams) write(w *bitWriter) {
+	switch {
+	case q.globalScale >= 1 && q.globalScale <= 2048:
+		w.bits(2, 0)
+		w.bits(11, uint64(q.globalScale-1))
+	case q.globalScale <= 4096:
+		w.bits(2, 1)
+		w.bits(11, uint64(q.globalScale-2049))
+	case q.globalScale <= 8192:
+		w.bits(2, 2)
+		w.bits(12, uint64(q.globalScale-4097))
+	case q.globalScale <= 8192+1<<16:
+		w.bits(2, 3)
+		w.bits(16, uint64(q.globalScale-8193))
+	default:
+		w.setErr(ErrInvalid)
+
+		return
+	}
+
+	switch {
+	case q.quantLF == 16:
+		w.bits(2, 0)
+	case q.quantLF >= 1 && q.quantLF <= 32:
+		w.bits(2, 1)
+		w.bits(5, uint64(q.quantLF-1))
+	case q.quantLF <= 256:
+		w.bits(2, 2)
+		w.bits(8, uint64(q.quantLF-1))
+	case q.quantLF <= 1<<16:
+		w.bits(2, 3)
+		w.bits(16, uint64(q.quantLF-1))
+	default:
+		w.setErr(ErrInvalid)
+	}
+}
+
+func defaultColorCorrelation() colorCorrelation {
+	return colorCorrelation{factor: defaultColorFactor, baseB: 1}
+}
+
+func (c *colorCorrelation) write(w *bitWriter) {
+	if *c == defaultColorCorrelation() {
+		w.bit(true)
+
+		return
+	}
+
+	w.bit(false)
+
+	switch {
+	case c.factor == defaultColorFactor:
+		w.bits(2, 0)
+	case c.factor == 256:
+		w.bits(2, 1)
+	case c.factor >= 2 && c.factor <= 257:
+		w.bits(2, 2)
+		w.bits(8, uint64(c.factor-2))
+	case c.factor >= 258 && c.factor <= 257+1<<16:
+		w.bits(2, 3)
+		w.bits(16, uint64(c.factor-258))
+	default:
+		w.setErr(ErrInvalid)
+
+		return
+	}
+
+	if c.baseX > 4 || c.baseB > 4 || c.ytoxLF < -128 || c.ytoxLF > 127 ||
+		c.ytobLF < -128 || c.ytobLF > 127 {
+		w.setErr(ErrInvalid)
+
+		return
+	}
+
+	w.f16(c.baseX)
+	w.f16(c.baseB)
+	w.bits(8, uint64(c.ytoxLF+128))
+	w.bits(8, uint64(c.ytobLF+128))
+}
+
+func writeBlockContextValue(w *bitWriter, u uint32) {
+	switch {
+	case u < 16:
+		w.bits(2, 0)
+		w.bits(4, uint64(u))
+	case u < 272:
+		w.bits(2, 1)
+		w.bits(8, uint64(u-16))
+	case u < 65808:
+		w.bits(2, 2)
+		w.bits(16, uint64(u-272))
+	default:
+		w.bits(2, 3)
+		w.bits(32, uint64(u-65808))
+	}
+}
+
+func writeQuantFactorThreshold(w *bitWriter, u uint32) {
+	switch {
+	case u < 4:
+		w.bits(2, 0)
+		w.bits(2, uint64(u))
+	case u < 12:
+		w.bits(2, 1)
+		w.bits(3, uint64(u-4))
+	case u < 44:
+		w.bits(2, 2)
+		w.bits(5, uint64(u-12))
+	case u < 300:
+		w.bits(2, 3)
+		w.bits(8, uint64(u-44))
+	default:
+		w.setErr(ErrInvalid)
+	}
+}
+
+func (b *blockContextMap) isDefault() bool {
+	if b.numLFContexts != 1 || b.numContexts != 15 || len(b.qfThresholds) != 0 {
+		return false
+	}
+
+	for c := range 3 {
+		if len(b.lfThresholds[c]) != 0 {
+			return false
+		}
+	}
+
+	return len(b.contextMap) == len(defaultBlockContextMap)
+}
+
+func (b *blockContextMap) write(w *bitWriter) {
+	if b.isDefault() {
+		w.bit(true)
+
+		return
+	}
+
+	w.bit(false)
+
+	lf := 1
+
+	for c := range 3 {
+		t := b.lfThresholds[c]
+
+		if len(t) > 15 {
+			w.setErr(ErrInvalid)
+
+			return
+		}
+
+		w.bits(4, uint64(len(t)))
+
+		for _, v := range t {
+			writeBlockContextValue(w, packSigned(v))
+		}
+
+		lf *= len(t) + 1
+	}
+
+	if len(b.qfThresholds) > 15 || lf*(len(b.qfThresholds)+1) > 64 {
+		w.setErr(ErrInvalid)
+
+		return
+	}
+
+	w.bits(4, uint64(len(b.qfThresholds)))
+
+	for _, v := range b.qfThresholds {
+		if v == 0 {
+			w.setErr(ErrInvalid)
+
+			return
+		}
+
+		writeQuantFactorThreshold(w, v-1)
+	}
+
+	if len(b.contextMap) != 3*numOrders*lf*(len(b.qfThresholds)+1) {
+		w.setErr(ErrInvalid)
+
+		return
+	}
+
+	writeContextMap(w, b.contextMap)
+}
+
+func (d *dequantMatrices) write(w *bitWriter) {
+	for i := range numQuantTables {
+		if &d.tables[i][0] != &libraryTables[i][0] {
+			w.setErr(ErrUnsupported)
+
+			return
+		}
+	}
+
+	w.bit(true)
+}

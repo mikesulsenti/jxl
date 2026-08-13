@@ -439,3 +439,266 @@ func TestACGroupRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestVarDCTHeadersRoundTrip(t *testing.T) {
+	rng := rand.New(rand.NewPCG(53, 59))
+
+	for range 300 {
+		var (
+			lq lfQuantFactors
+			qp quantizerParams
+			cc colorCorrelation
+		)
+
+		lq.factors = lfQuantDefault
+
+		if rng.IntN(2) == 0 {
+			for i := range lq.factors {
+				lq.factors[i] = float32(rng.IntN(2047)+1) / 128 / 128
+			}
+		}
+
+		qp.globalScale = uint32(rng.IntN(73728)) + 1
+		qp.quantLF = uint32(rng.IntN(1 << 16))
+
+		if qp.quantLF == 0 || rng.IntN(4) == 0 {
+			qp.quantLF = 16
+		}
+
+		cc = defaultColorCorrelation()
+
+		if rng.IntN(2) == 0 {
+			cc = colorCorrelation{
+				factor: []uint32{defaultColorFactor, 256, uint32(rng.IntN(256)) + 2,
+					uint32(rng.IntN(1<<16)) + 258}[rng.IntN(4)],
+				baseX:  float32(rng.IntN(2049)-1024) / 512,
+				baseB:  float32(rng.IntN(2049)-1024) / 512,
+				ytoxLF: int32(rng.IntN(256)) - 128,
+				ytobLF: int32(rng.IntN(256)) - 128,
+			}
+		}
+
+		var w bitWriter
+
+		lq.write(&w)
+		qp.write(&w)
+		cc.write(&w)
+
+		if err := w.err(); err != nil {
+			t.Fatalf("%v %v %v: write gave %v", lq, qp, cc, err)
+		}
+
+		r := newBitReader(append(w.bytes(), make([]byte, 16)...))
+
+		var (
+			lq2 lfQuantFactors
+			qp2 quantizerParams
+			cc2 colorCorrelation
+		)
+
+		lq2.read(r)
+		qp2.read(r)
+		cc2.read(r)
+
+		if err := r.err(); err != nil {
+			t.Fatalf("%v %v %v: read gave %v", lq, qp, cc, err)
+		}
+
+		if lq2 != lq || qp2 != qp || cc2 != cc {
+			t.Fatalf("read back %v %v %v, want %v %v %v", lq2, qp2, cc2, lq, qp, cc)
+		}
+	}
+}
+
+func TestQuantizerParamsAreShortest(t *testing.T) {
+	cases := []struct {
+		globalScale, quantLF uint32
+		bits                 int
+	}{
+		{1, 16, 15}, {2048, 16, 15}, {2049, 16, 15}, {4096, 16, 15},
+		{4097, 16, 16}, {8192, 16, 16}, {8193, 16, 20}, {73728, 16, 20},
+		{1, 1, 20}, {1, 32, 20}, {1, 33, 23}, {1, 256, 23},
+		{1, 257, 31}, {1, 65536, 31},
+	}
+
+	for _, c := range cases {
+		var w bitWriter
+
+		q := quantizerParams{globalScale: c.globalScale, quantLF: c.quantLF}
+		q.write(&w)
+
+		if err := w.err(); err != nil {
+			t.Fatalf("%v: %v", c, err)
+		}
+
+		if w.pos() != c.bits {
+			t.Fatalf("scale %d quantLF %d took %d bits, want %d",
+				c.globalScale, c.quantLF, w.pos(), c.bits)
+		}
+
+		r := newBitReader(append(w.bytes(), make([]byte, 8)...))
+
+		var got quantizerParams
+
+		got.read(r)
+
+		if got != q {
+			t.Fatalf("read back %v, want %v", got, q)
+		}
+	}
+}
+
+func TestDequantMatricesWrite(t *testing.T) {
+	var w bitWriter
+
+	d := dequantMatrices{tables: libraryTables}
+	d.write(&w)
+
+	if err := w.err(); err != nil {
+		t.Fatalf("the library tables gave %v", err)
+	}
+
+	r := newBitReader(append(w.bytes(), make([]byte, 8)...))
+
+	if !r.bit() {
+		t.Fatal("the library flag was not set")
+	}
+
+	var custom bitWriter
+
+	d.tables[3] = append([]float32(nil), d.tables[3]...)
+	d.write(&custom)
+
+	if custom.err() != ErrUnsupported {
+		t.Fatalf("a custom table gave %v, want %v", custom.err(), ErrUnsupported)
+	}
+}
+
+func TestBlockContextMapRoundTrip(t *testing.T) {
+	rng := rand.New(rand.NewPCG(61, 67))
+
+	cases, custom := 0, 0
+
+	for range 200 {
+		b := blockContextMap{
+			contextMap:    defaultBlockContextMap,
+			numLFContexts: 1,
+			numContexts:   15,
+		}
+
+		if rng.IntN(2) == 0 {
+			lf := 1
+
+			for c := range 3 {
+				n := rng.IntN(2)
+				b.lfThresholds[c] = make([]int32, n)
+
+				for i := range b.lfThresholds[c] {
+					b.lfThresholds[c][i] = int32(rng.IntN(2001)) - 1000
+				}
+
+				lf *= n + 1
+			}
+
+			nqf := rng.IntN(3)
+
+			for lf*(nqf+1) > 64 {
+				nqf--
+			}
+
+			b.qfThresholds = make([]uint32, nqf)
+
+			for i := range b.qfThresholds {
+				b.qfThresholds[i] = uint32(rng.IntN(299)) + 1
+			}
+
+			b.numLFContexts = lf
+
+			size := 3 * numOrders * lf * (nqf + 1)
+			b.contextMap = make([]uint8, size)
+
+			clusters := rng.IntN(16) + 1
+
+			for i := range b.contextMap {
+				b.contextMap[i] = uint8(rng.IntN(clusters))
+			}
+
+			for i := range min(clusters, size) {
+				b.contextMap[i] = uint8(i)
+			}
+
+			m := uint8(0)
+
+			for _, v := range b.contextMap {
+				m = max(m, v)
+			}
+
+			b.numContexts = int(m) + 1
+			custom++
+		}
+
+		var w bitWriter
+
+		b.write(&w)
+
+		if err := w.err(); err != nil {
+			t.Fatalf("write gave %v", err)
+		}
+
+		r := newBitReader(append(w.bytes(), make([]byte, 16)...))
+
+		var got blockContextMap
+
+		got.read(r)
+
+		if err := r.err(); err != nil {
+			t.Fatalf("read gave %v", err)
+		}
+
+		if got.numContexts != b.numContexts || got.numLFContexts != b.numLFContexts {
+			t.Fatalf("read back %d/%d contexts, want %d/%d",
+				got.numContexts, got.numLFContexts, b.numContexts, b.numLFContexts)
+		}
+
+		if len(got.contextMap) != len(b.contextMap) {
+			t.Fatalf("read back a map of %d, want %d", len(got.contextMap), len(b.contextMap))
+		}
+
+		for c := range 3 {
+			if len(got.lfThresholds[c]) != len(b.lfThresholds[c]) {
+				t.Fatalf("channel %d read back %d lf thresholds, want %d",
+					c, len(got.lfThresholds[c]), len(b.lfThresholds[c]))
+			}
+
+			for i, v := range b.lfThresholds[c] {
+				if got.lfThresholds[c][i] != v {
+					t.Fatalf("channel %d lf threshold %d read back as %d, want %d",
+						c, i, got.lfThresholds[c][i], v)
+				}
+			}
+		}
+
+		if len(got.qfThresholds) != len(b.qfThresholds) {
+			t.Fatalf("read back %d quant factor thresholds, want %d",
+				len(got.qfThresholds), len(b.qfThresholds))
+		}
+
+		for i, v := range b.qfThresholds {
+			if got.qfThresholds[i] != v {
+				t.Fatalf("quant factor threshold %d read back as %d, want %d",
+					i, got.qfThresholds[i], v)
+			}
+		}
+
+		for i := range b.contextMap {
+			if got.contextMap[i] != b.contextMap[i] {
+				t.Fatalf("map entry %d read back as %d, want %d",
+					i, got.contextMap[i], b.contextMap[i])
+			}
+		}
+
+		cases++
+	}
+
+	t.Logf("%d block context maps round-tripped, %d of them custom", cases, custom)
+}
