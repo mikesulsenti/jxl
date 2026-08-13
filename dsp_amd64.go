@@ -11,6 +11,10 @@ func epf1AVX2(dst, src *[3]*float32, stride int, sigma *float32, sigmaStride int
 	mul, scales *float32, y, x0, x1 int)
 
 //go:noescape
+func epf2AVX2(dst, src *[3]*float32, stride int, sigma *float32, sigmaStride int,
+	k *[6][8]float32, y, x0, x1 int)
+
+//go:noescape
 func xybSRGBAVX2(x, y, b *float32, n int, k *[29][8]float32)
 
 //go:noescape
@@ -22,6 +26,7 @@ func dspInit() {
 	}
 
 	epf1Asm = epf1AVX2
+	epf2Asm = epf2AVX2
 	xybSRGBAsm = xybSRGBAVX2
 	gaborishAsm = gaborishAVX2
 }
