@@ -910,7 +910,24 @@ func (v *varDCT) dequantBlock(s *dctScratch, t hfTransform, invGlobalScale float
 	my := v.dq.matrix(t, 1)
 	mb := v.dq.matrix(t, 2)
 
-	for k := range numCoeffs {
+	k := 0
+
+	if n := numCoeffs &^ 7; n > 0 {
+		a := dequantArgs{
+			out:    [3]*float32{&out[0][0], &out[1][0], &out[2][0]},
+			coeffs: [3]*int32{&coeffs[0][offset], &coeffs[1][offset], &coeffs[2][offset]},
+			mat:    [3]*float32{&mx[0], &my[0], &mb[0]},
+			n:      n,
+			p: [9]float32{biases[0], biases[1], biases[2], biases[3],
+				scaledX, scaledY, scaledB, xcc, bcc},
+		}
+
+		if dequant(&a) {
+			k = n
+		}
+	}
+
+	for ; k < numCoeffs; k++ {
 		qx := adjustQuantBias(0, coeffs[0][offset+k], biases)
 		qy := adjustQuantBias(1, coeffs[1][offset+k], biases)
 		qb := adjustQuantBias(2, coeffs[2][offset+k], biases)

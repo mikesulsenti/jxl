@@ -16,4 +16,14 @@ var useIDCTCols bool
 
 var useTranspose8 bool
 
+var useDequant bool
+
+type dequantArgs struct {
+	out    [3]*float32
+	coeffs [3]*int32
+	mat    [3]*float32
+	n      int
+	p      [9]float32
+}
+
 func init() { dspInit() }

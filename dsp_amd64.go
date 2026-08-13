@@ -35,6 +35,7 @@ func dspInit() {
 	useIDCT8x8 = true
 	useIDCTCols = true
 	useTranspose8 = true
+	useDequant = true
 }
 
 //go:noescape
@@ -42,6 +43,19 @@ func idct8Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k 
 
 //go:noescape
 func idct16Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[31][8]float32)
+
+//go:noescape
+func dequantAVX2(a *dequantArgs)
+
+func dequant(a *dequantArgs) bool {
+	if !useDequant {
+		return false
+	}
+
+	dequantAVX2(a)
+
+	return true
+}
 
 //go:noescape
 func idct32PreAVX2(src *float32, srcStride int, tmp *float32, k *[31][8]float32)

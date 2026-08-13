@@ -23,6 +23,7 @@ func dspInit() {
 	gaborishAsm = gaborishNEON
 	useIDCTCols = true
 	useTranspose8 = true
+	useDequant = true
 }
 
 func idct8x8([]float32) bool { return false }
@@ -68,6 +69,19 @@ func idctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int
 	default:
 		return false
 	}
+
+	return true
+}
+
+//go:noescape
+func dequantNEON(a *dequantArgs)
+
+func dequant(a *dequantArgs) bool {
+	if !useDequant {
+		return false
+	}
+
+	dequantNEON(a)
 
 	return true
 }
