@@ -1007,3 +1007,49 @@ func TestVarDCTBodyRoundTrip(t *testing.T) {
 		t.Logf("%v: reconstructed to within %.5f", dims, worst)
 	}
 }
+
+func TestFrameEncodeSplitsBack(t *testing.T) {
+	f := testFrame(64, 48)
+	f.hdr.flags = flagSkipAdaptiveLFSmoothing
+
+	body := []byte{1, 2, 3, 4, 5, 6, 7}
+
+	m := defaultImageMetadata()
+
+	var w bitWriter
+
+	f.encode(&w, &m, 64, 48, body)
+
+	if err := w.err(); err != nil {
+		t.Fatalf("encode gave %v", err)
+	}
+
+	r := newBitReader(append(w.bytes(), make([]byte, 16)...))
+
+	var got frameHeader
+
+	got.read(r, &m, 64, 48)
+
+	var tc toc
+
+	tc.read(r, got.numTOCEntries())
+
+	if err := r.err(); err != nil {
+		t.Fatalf("read gave %v", err)
+	}
+
+	if got.numTOCEntries() != 1 || len(tc.entries) != 1 || tc.entries[0] != uint32(len(body)) {
+		t.Fatalf("read back %d entries, first %v, want 1 of %d",
+			len(tc.entries), tc.entries, len(body))
+	}
+
+	if got.flags != f.hdr.flags || got.encoding != encVarDCT {
+		t.Fatalf("read back flags %d encoding %d", got.flags, got.encoding)
+	}
+
+	for i, b := range body {
+		if v := uint8(r.bits(8)); v != b {
+			t.Fatalf("body byte %d is %d, want %d", i, v, b)
+		}
+	}
+}
