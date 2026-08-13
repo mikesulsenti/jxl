@@ -3,6 +3,7 @@ package jxl
 import (
 	"image"
 	"io"
+	"math"
 )
 
 func encodeFilter() restorationFilter {
@@ -104,7 +105,7 @@ func (f *frame) blockToScratch(s *dctScratch, t hfTransform, bx, by int, lf *[3]
 	return true
 }
 
-func (f *frame) blockCost(s *dctScratch, t hfTransform, bx, by int, lf *[3][]float32) (int, float64) {
+func (f *frame) blockCost(s *dctScratch, t hfTransform, bx, by int, lf *[3][]float32) (float64, float64) {
 	v := f.vardct
 	cx, cy := t.blocks()
 	numCoeffs := cx * cy * blockSize
@@ -112,19 +113,19 @@ func (f *frame) blockCost(s *dctScratch, t hfTransform, bx, by int, lf *[3][]flo
 	stride := v.bw * blockDim
 
 	if !f.blockToScratch(s, t, bx, by, lf) {
-		return 1 << 30, 0
+		return math.Inf(1), 0
 	}
 
 	v.quantizeBlock(s, t, v.quant.invGlobalScale(), uint32(v.rawQuant[by*v.bw+bx]),
 		v.cmap.yToX(0), v.cmap.yToB(0), numCoeffs, 0)
 
 	order := naturalOrders[hfShapeID[t]]
-	rate := 0
+	rate := 0.0
 
 	for c := range 3 {
 		for k := cx * cy; k < numCoeffs; k++ {
-			if s.coeffs[c][order[k]] != 0 {
-				rate++
+			if q := s.coeffs[c][order[k]]; q != 0 {
+				rate += 1 + math.Log2(float64(absInt32(q))+1)
 			}
 		}
 
@@ -154,11 +155,54 @@ func (f *frame) blockCost(s *dctScratch, t hfTransform, bx, by int, lf *[3][]flo
 	return rate, sse
 }
 
+const transformRateMargin = 0.7
+
+var transformCandidates = [...]hfTransform{
+	hfDCT32X32, hfDCT32X16, hfDCT16X32, hfDCT32X8, hfDCT8X32, hfDCT16X16, hfDCT16X8, hfDCT8X16,
+}
+
+func (f *frame) regionFree(bx, by, cx, cy int) bool {
+	v := f.vardct
+
+	if bx+cx > v.bw || by+cy > v.bh {
+		return false
+	}
+
+	if bx+cx > (bx/32+1)*32 || by+cy > (by/32+1)*32 {
+		return false
+	}
+
+	for iy := range cy {
+		for ix := range cx {
+			if v.transform[(by+iy)*v.bw+bx+ix] != invalidTransform {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
 func (f *frame) chooseTransforms(s *dctScratch) {
 	v := f.vardct
 
 	for i := range v.transform {
 		v.transform[i] = invalidTransform
+	}
+
+	var lf [3][]float32
+
+	for c := range 3 {
+		lf[c] = make([]float32, maxCoeffBlocks*maxCoeffBlocks)
+	}
+
+	rate8 := make([]float64, v.bw*v.bh)
+	sse8 := make([]float64, v.bw*v.bh)
+
+	for by := range v.bh {
+		for bx := range v.bw {
+			rate8[by*v.bw+bx], sse8[by*v.bw+bx] = f.blockCost(s, hfDCT, bx, by, &lf)
+		}
 	}
 
 	for by := range v.bh {
@@ -167,39 +211,36 @@ func (f *frame) chooseTransforms(s *dctScratch) {
 				continue
 			}
 
-			t := hfDCT
+			best, saving := hfDCT, 0.0
 
-			if bx%2 == 0 && by%2 == 0 && bx+2 <= v.bw && by+2 <= v.bh {
-				var (
-					lf       [3][]float32
-					rate     int
-					distance float64
-				)
+			for _, t := range transformCandidates {
+				cx, cy := t.blocks()
 
-				for c := range 3 {
-					lf[c] = make([]float32, maxCoeffBlocks*maxCoeffBlocks)
+				if !f.regionFree(bx, by, cx, cy) {
+					continue
 				}
 
-				for oy := range 2 {
-					for ox := range 2 {
-						r, d := f.blockCost(s, hfDCT, bx+ox, by+oy, &lf)
-						rate += r
-						distance += d
+				baseRate, baseSSE := 0.0, 0.0
+
+				for iy := range cy {
+					for ix := range cx {
+						baseRate += rate8[(by+iy)*v.bw+bx+ix]
+						baseSSE += sse8[(by+iy)*v.bw+bx+ix]
 					}
 				}
 
-				bigRate, bigDistance := f.blockCost(s, hfDCT16X16, bx, by, &lf)
+				rate, sse := f.blockCost(s, t, bx, by, &lf)
 
-				if bigRate < rate && bigDistance <= distance {
-					t = hfDCT16X16
+				if rate < baseRate*transformRateMargin && sse <= baseSSE && baseRate-rate > saving {
+					best, saving = t, baseRate-rate
 				}
 			}
 
-			cx, cy := t.blocks()
+			cx, cy := best.blocks()
 
 			for iy := range cy {
 				for ix := range cx {
-					id := uint8(t)
+					id := uint8(best)
 
 					if ix == 0 && iy == 0 {
 						id |= 128
