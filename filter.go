@@ -96,9 +96,10 @@ type epfPlanes struct {
 	w, h    int
 	threads int
 
-	xoff []int
-	yoff []int
-	out  [][]float32
+	arena *arena
+	xoff  []int
+	yoff  []int
+	out   [][]float32
 }
 
 func (e *epfPlanes) init() {
@@ -114,7 +115,7 @@ func (e *epfPlanes) init() {
 
 	e.out = make([][]float32, len(e.planes))
 	for i := range e.out {
-		e.out[i] = make([]float32, e.w*e.h)
+		e.out[i] = e.arena.getDirty(e.w * e.h)
 	}
 }
 

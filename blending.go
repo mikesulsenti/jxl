@@ -6,10 +6,10 @@ type canvas struct {
 	planes   [][]float32
 }
 
-func newCanvas(w, h, channels int) *canvas {
+func newCanvas(w, h, channels int, a *arena) *canvas {
 	c := &canvas{w: w, h: h, channels: channels, planes: make([][]float32, channels)}
 	for i := range c.planes {
-		c.planes[i] = make([]float32, w*h)
+		c.planes[i] = a.get(w * h)
 	}
 
 	return c

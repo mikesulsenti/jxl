@@ -145,7 +145,7 @@ func (d *decoder) decodeLFGlobal(f *frame, global *bitReader) error {
 	f.lfQuant.read(global)
 
 	if f.hdr.encoding == encVarDCT {
-		f.vardct = newVarDCT(f, d.hdr.transform.opsin.quant)
+		f.vardct = newVarDCT(f, d.hdr.transform.opsin.quant, &d.arena)
 
 		if f.hdr.flags&flagUseLFFrame != 0 && !f.vardct.copyLF(d.lfFrames[f.hdr.lfLevel]) {
 			return ErrInvalid

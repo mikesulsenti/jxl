@@ -19,6 +19,7 @@ type decoder struct {
 	br       *bitReader
 	hdr      fileHeader
 	iccp     []byte
+	arena    arena
 	refs     [4]*canvas
 	preCT    [4]*refFrame
 	lfFrames [4]*refFrame
@@ -195,18 +196,28 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 			result = &canvas{w: w, h: h, channels: channels, planes: planes}
 		} else {
 			ref := d.refs[f.hdr.blending.source]
-			if ref == nil {
-				ref = newCanvas(w, h, channels)
+			blank := ref == nil
+
+			if blank {
+				ref = newCanvas(w, h, channels, &d.arena)
 			}
 
-			result = newCanvas(w, h, channels)
+			result = newCanvas(w, h, channels, &d.arena)
 
 			b.blend(result, ref, planes, fw, fh,
 				int(f.hdr.x0), int(f.hdr.y0), colorSpec, ecSpecs)
+
+			if blank {
+				d.arena.putAll(ref.planes)
+			}
+
+			d.arena.putAll(planes)
 		}
 
 		if f.hdr.canBeReferenced {
+			old := d.refs[f.hdr.saveAsReference]
 			d.refs[f.hdr.saveAsReference] = result
+			d.release(old, result)
 		}
 
 		if f.hdr.isLast || f.hdr.duration > 0 {
@@ -248,6 +259,8 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 			out.Frames = append(out.Frames, interleaved)
 			delays = append(delays, f.hdr.delay(&m.anim))
 		}
+
+		d.release(result, nil)
 
 		if f.hdr.isLast {
 			break
@@ -291,13 +304,15 @@ func (d *decoder) renderFrame(f *frame, channels int) ([][]float32, error) {
 			{g.gabBWeight1, g.gabBWeight2},
 		}
 
-		scratch := make([]float32, cw*ch)
+		scratch := d.arena.getDirty(cw * ch)
 
 		for c := range min(color, 3) {
 			out := gaborish(planes[c], scratch, cw, ch, d.threads, weights[c][0], weights[c][1])
 
 			scratch, planes[c] = planes[c], out
 		}
+
+		d.arena.put(scratch)
 	}
 
 	if err := d.applyEPF(f, planes, cw, ch, color); err != nil {
@@ -360,8 +375,14 @@ func (d *decoder) toPlanes(f *frame, w, h int) ([][]float32, error) {
 	color := d.colorPlanes(f)
 
 	planes := make([][]float32, color+len(m.extraChannels))
-	for i := range planes {
-		planes[i] = make([]float32, w*h)
+
+	adopted := 0
+	if f.vardct != nil {
+		adopted = 3
+	}
+
+	for i := adopted; i < len(planes); i++ {
+		planes[i] = d.arena.getDirty(w * h)
 	}
 
 	switch {
@@ -382,9 +403,19 @@ func (d *decoder) toPlanes(f *frame, w, h int) ([][]float32, error) {
 				sh *= 2
 			}
 
-			for y := range h {
-				copy(planes[c][y*w:(y+1)*w], src[y*sw:])
+			if sw != w {
+				for y := 1; y < h; y++ {
+					copy(src[y*w:(y+1)*w], src[y*sw:])
+				}
 			}
+
+			planes[c] = src[:w*h]
+
+			if &src[0] != &v.pixels[c][0] {
+				d.arena.put(v.pixels[c])
+			}
+
+			v.pixels[c] = nil
 		}
 	case m.xybEncoded:
 		if len(f.modular.channels) < 3 {
@@ -478,7 +509,7 @@ func (d *decoder) applyEPF(f *frame, planes [][]float32, w, h, color int) error 
 		return nil
 	}
 
-	e := epfPlanes{w: w, h: h, threads: d.threads}
+	e := epfPlanes{w: w, h: h, threads: d.threads, arena: &d.arena}
 
 	switch {
 	case color >= 3:
@@ -517,6 +548,7 @@ func (d *decoder) applyEPF(f *frame, planes [][]float32, w, h, color int) error 
 	}
 
 	copy(planes, e.planes)
+	d.arena.putAll(e.out)
 
 	return nil
 }

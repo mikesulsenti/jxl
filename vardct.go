@@ -318,7 +318,7 @@ func (s *dctScratch) alloc(f *frame) {
 	}
 }
 
-func newVarDCT(f *frame, biases [4]float32) *varDCT {
+func newVarDCT(f *frame, biases [4]float32, a *arena) *varDCT {
 	v := &varDCT{biases: biases}
 
 	v.bw, v.bh = f.hdr.sizeBlocks()
@@ -331,7 +331,7 @@ func newVarDCT(f *frame, biases [4]float32) *varDCT {
 		v.vs[c] = int(f.hdr.maxvs - jpegVShift[f.hdr.jpegUpsampling[c]])
 
 		v.lf[c] = make([]float32, (v.bw>>v.hs[c])*(v.bh>>v.vs[c]))
-		v.pixels[c] = make([]float32, (v.bw*blockDim>>v.hs[c])*(v.bh*blockDim>>v.vs[c]))
+		v.pixels[c] = a.get((v.bw * blockDim >> v.hs[c]) * (v.bh * blockDim >> v.vs[c]))
 	}
 
 	v.quantLF = make([]uint8, n)

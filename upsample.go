@@ -107,10 +107,13 @@ func (d *decoder) upsamplePlanes(f *frame, planes [][]float32, cw, ch, w, h int)
 	for i, p := range planes {
 		up := upsamplePlane(p, cw, ch, n, d.threads, kernels)
 
-		out[i] = make([]float32, w*h)
+		out[i] = d.arena.getDirty(w * h)
 		for y := range h {
 			copy(out[i][y*w:(y+1)*w], up[y*dw:])
 		}
+
+		d.arena.put(p)
+		d.arena.put(up)
 	}
 
 	return out
