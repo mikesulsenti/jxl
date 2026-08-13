@@ -434,11 +434,13 @@ func (f *frame) encodeVarDCTLF(w *bitWriter, g int, hdr *groupHeader, tree *maTr
 		off := (rc.y0+y)*v.bw + rc.x0
 
 		for x := range rc.w {
+			inX := float32(qx[x]) * fac[0]
 			inY := float32(qy[x]) * fac[1]
+			inB := float32(qb[x]) * fac[2]
 
 			v.lf[1][off+x] = inY
-			v.lf[0][off+x] = inY*cflX + float32(qx[x])*fac[0]
-			v.lf[2][off+x] = inY*cflB + float32(qb[x])*fac[2]
+			v.lf[0][off+x] = inY*cflX + inX
+			v.lf[2][off+x] = inY*cflB + inB
 
 			if v.bctx.numLFContexts <= 1 {
 				continue
