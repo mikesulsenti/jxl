@@ -16,6 +16,33 @@ func clamp01(v float32) float32 {
 	return v
 }
 
+func (d *decoder) renderSpot(f *Float, frame int) {
+	m := &d.hdr.meta
+	color := m.colorChannels()
+
+	d.renderSpot(f, frame)
+	src := f.Frames[frame]
+
+	for i, e := range m.extraChannels {
+		if e.ecType != ecSpotColor {
+			continue
+		}
+
+		scale := e.spotColor[3]
+
+		overRows(d.threads, f.Height, func(y0, y1 int) {
+			for j := y0 * f.Width; j < y1*f.Width; j++ {
+				o := j * f.Channels
+				mix := scale * src[o+color+i]
+
+				for c := range min(color, 3) {
+					src[o+c] = mix*e.spotColor[c] + (1-mix)*src[o+c]
+				}
+			}
+		})
+	}
+}
+
 func (d *decoder) toImage(f *Float, frame int) (image.Image, error) {
 	m := &d.hdr.meta
 	gray := m.color.space == csGray
