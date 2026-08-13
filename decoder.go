@@ -508,6 +508,8 @@ func (d *decoder) applyEPF(f *frame, planes [][]float32, w, h, color int) error 
 		e.pass2(rf.epfPass2SigmaScale, rf.epfBorderSadMul)
 	}
 
+	copy(planes, e.planes)
+
 	return nil
 }
 
