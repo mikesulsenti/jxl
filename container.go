@@ -20,6 +20,13 @@ type jxlpChunk struct {
 }
 
 func parseContainer(data []byte) (*container, error) {
+	return readContainer(data, false)
+}
+
+// readContainer parses the boxes. With partial set, a final box that runs past
+// the buffer is clamped to what is there and the walk stops, which is what
+// DecodeConfig needs to reach the image header without the whole file.
+func readContainer(data []byte, partial bool) (*container, error) {
 	c := &container{level: 5}
 
 	var (
@@ -52,8 +59,16 @@ func parseContainer(data []byte) (*container, error) {
 			size = uint64(len(data) - pos)
 		}
 
-		if size < uint64(header) || size > uint64(len(data)-pos) {
+		if size < uint64(header) {
 			return nil, ErrInvalid
+		}
+
+		if size > uint64(len(data)-pos) {
+			if !partial {
+				return nil, ErrInvalid
+			}
+
+			size = uint64(len(data) - pos)
 		}
 
 		body := data[pos+header : pos+int(size)]
@@ -141,7 +156,7 @@ func parseContainer(data []byte) (*container, error) {
 	}
 
 	if len(chunks) > 0 {
-		if lastJxlp != len(chunks)-1 {
+		if lastJxlp != len(chunks)-1 && !partial {
 			return nil, ErrInvalid
 		}
 
@@ -150,6 +165,12 @@ func parseContainer(data []byte) (*container, error) {
 		total := 0
 		for i, ch := range chunks {
 			if ch.index != uint32(i) {
+				if partial {
+					chunks = chunks[:i]
+
+					break
+				}
+
 				return nil, ErrInvalid
 			}
 

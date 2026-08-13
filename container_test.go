@@ -3,6 +3,8 @@ package jxl
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -317,6 +319,83 @@ func TestContainerCorpus(t *testing.T) {
 	}
 
 	t.Logf("%d of %d inputs use the container format", boxed, len(paths))
+}
+
+type shortReader struct {
+	data []byte
+	pos  int
+	read int
+}
+
+func (s *shortReader) Read(p []byte) (int, error) {
+	if s.pos >= len(s.data) {
+		return 0, io.EOF
+	}
+
+	n := copy(p, s.data[s.pos:])
+	s.pos += n
+	s.read += n
+
+	return n, nil
+}
+
+// TestDecodeConfigReadsAHeader checks that DecodeConfig answers from a prefix
+// rather than the whole file, and that the answer is the one the whole file
+// gives.
+func TestDecodeConfigReadsAHeader(t *testing.T) {
+	var paths []string
+
+	for _, g := range []string{
+		filepath.Join("testdata", "*", "*.jxl"),
+		filepath.Join(conformanceRoot(t), "testcases", "*", "input.jxl"),
+	} {
+		m, err := filepath.Glob(g)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		paths = append(paths, m...)
+	}
+
+	if len(paths) == 0 {
+		t.Fatal("no inputs found")
+	}
+
+	checked := 0
+
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		want, werr := decodeConfig(data)
+
+		r := &shortReader{data: data}
+
+		got, err := DecodeConfig(r)
+		if !errors.Is(err, werr) {
+			t.Fatalf("%s: streamed error %v, whole file %v", p, err, werr)
+		}
+		if werr != nil {
+			continue
+		}
+		if got != want {
+			t.Fatalf("%s: streamed %v, whole file %v", p, got, want)
+		}
+
+		checked++
+
+		if len(data) > 4*configChunk && r.read > configChunk {
+			t.Errorf("%s: read %d of %d bytes for a header", p, r.read, len(data))
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no inputs produced a config")
+	}
+
+	t.Logf("%d inputs, each answered from at most %d bytes", checked, configChunk)
 }
 
 func FuzzContainer(f *testing.F) {

@@ -29,29 +29,8 @@ type decoder struct {
 }
 
 func newDecoder(data []byte, o Options) (*decoder, error) {
-	boxed, skip, err := signature(data)
+	d, err := readHeader(data, o, false)
 	if err != nil {
-		return nil, err
-	}
-
-	d := &decoder{opts: o, threads: numThreads(o.Threads)}
-
-	if boxed {
-		if d.file, err = parseContainer(data[skip:]); err != nil {
-			return nil, err
-		}
-	} else {
-		d.file = &container{codestream: data, level: 5}
-	}
-
-	if d.file.level > d.opts.Level {
-		return nil, ErrUnsupported
-	}
-
-	d.br = newBitReader(d.file.codestream)
-	d.hdr.read(d.br)
-
-	if err := d.br.err(); err != nil {
 		return nil, err
 	}
 
@@ -68,6 +47,39 @@ func newDecoder(data []byte, o Options) (*decoder, error) {
 		}
 
 		d.iccp = profile
+	}
+
+	return d, nil
+}
+
+// readHeader stops after the image header, which is all DecodeConfig needs and
+// is a bounded distance into the file. With partial set the container may be
+// truncated after that header.
+func readHeader(data []byte, o Options, partial bool) (*decoder, error) {
+	boxed, skip, err := signature(data)
+	if err != nil {
+		return nil, err
+	}
+
+	d := &decoder{opts: o, threads: numThreads(o.Threads)}
+
+	if boxed {
+		if d.file, err = readContainer(data[skip:], partial); err != nil {
+			return nil, err
+		}
+	} else {
+		d.file = &container{codestream: data, level: 5}
+	}
+
+	if d.file.level > d.opts.Level {
+		return nil, ErrUnsupported
+	}
+
+	d.br = newBitReader(d.file.codestream)
+	d.hdr.read(d.br)
+
+	if err := d.br.err(); err != nil {
+		return nil, err
 	}
 
 	return d, nil
@@ -638,7 +650,7 @@ func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) {
 }
 
 func decodeConfig(data []byte) (image.Config, error) {
-	d, err := newDecoder(data, options(nil))
+	d, err := readHeader(data, options(nil), true)
 	if err != nil {
 		return image.Config{}, err
 	}

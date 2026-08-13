@@ -105,14 +105,31 @@ func DecodeFloat(r io.Reader, opts ...Options) (*Float, error) {
 	return decodeFloat(data, options(opts))
 }
 
-// DecodeConfig reads the dimensions and color model without decoding pixels.
-func DecodeConfig(r io.Reader) (image.Config, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return image.Config{}, err
-	}
+// configChunk is the first read of DecodeConfig, and grows fourfold per retry.
+const configChunk = 1 << 12
 
-	return decodeConfig(data)
+// DecodeConfig reads the dimensions and color model without decoding pixels.
+// It reads only as far as the image header, retrying on a larger prefix until
+// the header parses or the reader is exhausted.
+func DecodeConfig(r io.Reader) (image.Config, error) {
+	var buf []byte
+
+	for size := configChunk; ; size *= 4 {
+		have := len(buf)
+
+		buf = append(buf, make([]byte, size-have)...)
+		n, err := io.ReadFull(r, buf[have:])
+		buf = buf[:have+n]
+
+		cfg, cerr := decodeConfig(buf)
+		if cerr == nil {
+			return cfg, nil
+		}
+
+		if err != nil {
+			return image.Config{}, cerr
+		}
+	}
 }
 
 func decode(r io.Reader) (image.Image, error) { return Decode(r) }
