@@ -50,14 +50,9 @@ func (s *source) more() bool {
 	return n > 0
 }
 
-func (s *source) need(n int) bool {
-	for s.avail() < n {
-		if !s.more() {
-			return false
-		}
+func (s *source) need(n int) {
+	for s.avail() < n && s.more() {
 	}
-
-	return true
 }
 
 func (s *source) advance(n int) {

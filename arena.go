@@ -81,17 +81,3 @@ func (a *arena) putAll(bs [][]float32) {
 		a.put(b)
 	}
 }
-
-func (d *decoder) release(c, keep *canvas) {
-	if c == nil || c == keep {
-		return
-	}
-
-	for _, r := range d.refs {
-		if r == c {
-			return
-		}
-	}
-
-	d.arena.putAll(c.planes)
-}

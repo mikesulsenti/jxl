@@ -201,7 +201,7 @@ func TestParseContainer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, err := parseContainer(tt.in)
+			c, err := readContainer(tt.in, false)
 
 			if tt.err {
 				if err == nil {
@@ -225,7 +225,7 @@ func TestParseContainerSizeZero(t *testing.T) {
 
 	in := append(ftyp(), append([]byte{0, 0, 0, 0, 'j', 'x', 'l', 'c'}, stream...)...)
 
-	c, err := parseContainer(in)
+	c, err := readContainer(in, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestParseContainerMetadata(t *testing.T) {
 		box("jxlc", stream),
 	}, nil)
 
-	c, err := parseContainer(in)
+	c, err := readContainer(in, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestContainerCorpus(t *testing.T) {
 
 			boxed++
 
-			c, err := parseContainer(data[skip:])
+			c, err := readContainer(data[skip:], false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -339,9 +339,6 @@ func (s *shortReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// TestDecodeConfigReadsAHeader checks that DecodeConfig answers from a prefix
-// rather than the whole file, and that the answer is the one the whole file
-// gives.
 func TestDecodeConfigReadsAHeader(t *testing.T) {
 	var paths []string
 
@@ -408,7 +405,7 @@ func FuzzContainer(f *testing.F) {
 		boxLarge("jxlc", stream)}, nil))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		c, err := parseContainer(data)
+		c, err := readContainer(data, false)
 		if err != nil {
 			return
 		}

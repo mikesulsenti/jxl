@@ -19,10 +19,6 @@ type jxlpChunk struct {
 	data  []byte
 }
 
-func parseContainer(data []byte) (*container, error) {
-	return readContainer(data, false)
-}
-
 func readContainer(data []byte, partial bool) (*container, error) {
 	c := &container{level: 5}
 
