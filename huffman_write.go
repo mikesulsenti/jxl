@@ -2,6 +2,7 @@ package jxl
 
 import (
 	"cmp"
+	"math/bits"
 	"slices"
 )
 
@@ -401,6 +402,55 @@ func writePrefixCode(w *bitWriter, counts []uint32, alSize int) []prefixCode {
 	}
 
 	return codes
+}
+
+func writeVarint16(w *bitWriter, v uint16) {
+	if v == 0 {
+		w.bit(false)
+
+		return
+	}
+
+	w.bit(true)
+
+	n := bits.Len16(v) - 1
+	w.bits(4, uint64(n))
+
+	if n > 0 {
+		w.bits(n, uint64(v)-1<<n)
+	}
+}
+
+func (c *huffmanCodes) write(w *bitWriter, counts [][]uint32) [][]prefixCode {
+	sizes := make([]int, len(counts))
+
+	for i, cnt := range counts {
+		size := 1
+
+		for s, n := range cnt {
+			if n > 0 {
+				size = s + 1
+			}
+		}
+
+		if size >= 1<<huffmanMaxBits {
+			w.setErr(ErrInvalid)
+
+			return nil
+		}
+
+		sizes[i] = size
+
+		writeVarint16(w, uint16(size-1))
+	}
+
+	out := make([][]prefixCode, len(counts))
+
+	for i, cnt := range counts {
+		out[i] = writePrefixCode(w, cnt, sizes[i])
+	}
+
+	return out
 }
 
 func prefixCodes(t *huffTable, alSize int) ([]prefixCode, bool) {
