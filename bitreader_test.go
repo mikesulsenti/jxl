@@ -8,107 +8,6 @@ import (
 	"testing"
 )
 
-type bitWriter struct {
-	data  []byte
-	buf   uint64
-	nbits int
-}
-
-func (w *bitWriter) bits(n int, v uint64) {
-	if n < 64 && v >= 1<<n {
-		panic("value does not fit")
-	}
-
-	w.buf |= v << w.nbits
-	w.nbits += n
-
-	for w.nbits >= 8 {
-		w.data = append(w.data, byte(w.buf))
-		w.buf >>= 8
-		w.nbits -= 8
-	}
-}
-
-func (w *bitWriter) zeroPad() {
-	if w.nbits > 0 {
-		w.bits(8-w.nbits, 0)
-	}
-}
-
-func (w *bitWriter) bytes() []byte {
-	w.zeroPad()
-
-	return w.data
-}
-
-func (w *bitWriter) u32(v uint32, d ...u32dist) bool {
-	best, total := 0, 64
-
-	for s, di := range d {
-		if di.direct {
-			if di.offset == v {
-				w.bits(2, uint64(s))
-
-				return true
-			}
-
-			continue
-		}
-
-		if uint64(v) < uint64(di.offset) || uint64(v) >= uint64(di.offset)+1<<di.bits {
-			continue
-		}
-		if n := 2 + int(di.bits); n < total {
-			best, total = s, n
-		}
-	}
-
-	if total == 64 {
-		return false
-	}
-
-	w.bits(2, uint64(best))
-	w.bits(int(d[best].bits), uint64(v-d[best].offset))
-
-	return true
-}
-
-func (w *bitWriter) u64(v uint64) {
-	switch {
-	case v == 0:
-		w.bits(2, 0)
-	case v <= 16:
-		w.bits(2, 1)
-		w.bits(4, v-1)
-	case v <= 272:
-		w.bits(2, 2)
-		w.bits(8, v-17)
-	default:
-		w.bits(2, 3)
-		w.bits(12, v&0xfff)
-
-		v >>= 12
-		for shift := 12; ; shift += 8 {
-			if v == 0 {
-				w.bits(1, 0)
-
-				break
-			}
-
-			w.bits(1, 1)
-
-			if shift == 60 {
-				w.bits(4, v&0xf)
-
-				break
-			}
-
-			w.bits(8, v&0xff)
-			v >>= 8
-		}
-	}
-}
-
 func TestBitReaderBits(t *testing.T) {
 	r := newBitReader([]byte{0x00, 0x01})
 
@@ -205,7 +104,10 @@ func TestBitReaderU32(t *testing.T) {
 			v := rng.Uint32() >> rng.UintN(32)
 
 			var w bitWriter
-			if !w.u32(v, enc...) {
+
+			w.u32(v, enc[0], enc[1], enc[2], enc[3])
+
+			if w.err() != nil {
 				continue
 			}
 
@@ -252,6 +154,49 @@ func TestBitReaderF16(t *testing.T) {
 		if err := r.err(); err != nil {
 			t.Fatalf("%#04x: err = %v", b, err)
 		}
+	}
+}
+
+func TestBitWriterF16(t *testing.T) {
+	for b := range 1 << 16 {
+		if exp := (b >> 10) & 0x1f; exp == 31 {
+			continue
+		}
+
+		r := newBitReader([]byte{byte(b), byte(b >> 8)})
+
+		v := r.f16()
+		if err := r.err(); err != nil {
+			t.Fatalf("%#04x: err = %v", b, err)
+		}
+
+		var w bitWriter
+
+		w.f16(v)
+
+		if err := w.err(); err != nil {
+			t.Fatalf("%#04x: writing %v gave %v", b, v, err)
+		}
+
+		got := newBitReader(w.bytes()).f16()
+		if math.Float32bits(got) != math.Float32bits(v) {
+			t.Fatalf("%#04x: f16 %v round-tripped to %v", b, v, got)
+		}
+	}
+
+	var w bitWriter
+
+	w.f16(float32(math.Inf(1)))
+
+	if !errors.Is(w.err(), ErrInvalid) {
+		t.Errorf("writing an infinity gave %v, want ErrInvalid", w.err())
+	}
+
+	w = bitWriter{}
+	w.f16(1e-9)
+
+	if !errors.Is(w.err(), ErrInvalid) {
+		t.Errorf("writing an unrepresentable value gave %v, want ErrInvalid", w.err())
 	}
 }
 
