@@ -43,6 +43,7 @@ func benchStream(b *testing.B, name string) {
 
 func BenchmarkVarDCT(b *testing.B)      { benchStream(b, "bench/dct_big.jxl") }
 func BenchmarkVarDCTSmall(b *testing.B) { benchStream(b, "bench/dct_mid_e7.jxl") }
+func BenchmarkEPF(b *testing.B)         { benchStream(b, "streams/dct_epf3.jxl") }
 func BenchmarkProgressive(b *testing.B) { benchStream(b, "bench/dct_prog.jxl") }
 func BenchmarkSqueeze(b *testing.B)     { benchStream(b, "bench/rgb_squeeze.jxl") }
 func BenchmarkLossless(b *testing.B)    { benchStream(b, "streams/rgb_lossless.jxl") }
