@@ -46,3 +46,20 @@ func (t *toc) read(r *bitReader, numEntries int) {
 		}
 	}
 }
+
+func (t *toc) write(w *bitWriter) {
+	if t.permuted {
+		w.setErr(ErrUnsupported)
+
+		return
+	}
+
+	w.bit(false)
+	w.zeroPad()
+
+	for _, e := range t.entries {
+		w.u32(e, dBits(10), dBitsOff(14, 1024), dBitsOff(22, 17408), dBitsOff(30, 4211712))
+	}
+
+	w.zeroPad()
+}

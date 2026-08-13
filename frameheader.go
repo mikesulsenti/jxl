@@ -268,6 +268,7 @@ func (h *frameHeader) read(r *bitReader, m *imageMetadata, imgW, imgH uint32) {
 
 	if r.bit() {
 		h.isLast = true
+		h.fullFrame = true
 		h.finish(imgW, imgH)
 
 		return
@@ -322,10 +323,7 @@ func (h *frameHeader) read(r *bitReader, m *imageMetadata, imgW, imgH uint32) {
 		h.frameHeight = r.u32(crop[0], crop[1], crop[2], crop[3])
 	}
 
-	covers := h.x0 <= 0 && h.y0 <= 0 &&
-		int64(h.frameWidth)+int64(h.x0) >= int64(imgW) &&
-		int64(h.frameHeight)+int64(h.y0) >= int64(imgH)
-	h.fullFrame = !h.haveCrop || covers
+	h.deriveFullFrame(imgW, imgH)
 
 	normal := h.ftype == ftRegular || h.ftype == ftSkipProgressive
 
@@ -352,8 +350,8 @@ func (h *frameHeader) read(r *bitReader, m *imageMetadata, imgW, imgH uint32) {
 		h.saveAsReference = uint32(r.bits(2))
 	}
 
-	h.canBeReferenced = !h.isLast && h.ftype != ftLF &&
-		(h.duration == 0 || h.saveAsReference != 0)
+	h.deriveRefs()
+
 	saveBeforeCTDefFalse := h.canBeReferenced && h.blending.mode == bmReplace &&
 		h.fullFrame && normal
 
@@ -372,6 +370,19 @@ func (h *frameHeader) read(r *bitReader, m *imageMetadata, imgW, imgH uint32) {
 }
 
 func d4(a, b, c, d u32dist) [4]u32dist { return [4]u32dist{a, b, c, d} }
+
+func (h *frameHeader) deriveFullFrame(imgW, imgH uint32) {
+	covers := h.x0 <= 0 && h.y0 <= 0 &&
+		int64(h.frameWidth)+int64(h.x0) >= int64(imgW) &&
+		int64(h.frameHeight)+int64(h.y0) >= int64(imgH)
+
+	h.fullFrame = !h.haveCrop || covers
+}
+
+func (h *frameHeader) deriveRefs() {
+	h.canBeReferenced = !h.isLast && h.ftype != ftLF &&
+		(h.duration == 0 || h.saveAsReference != 0)
+}
 
 func (h *frameHeader) finish(imgW, imgH uint32) {
 	h.width, h.height = h.frameWidth, h.frameHeight
