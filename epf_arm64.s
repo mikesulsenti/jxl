@@ -7,6 +7,7 @@
 #define FMUL4S(Vd, Vn, Vm) WORD $(0x6e20dc00 | ((Vm) << 16) | ((Vn) << 5) | (Vd))
 #define FDIV4S(Vd, Vn, Vm) WORD $(0x6e20fc00 | ((Vm) << 16) | ((Vn) << 5) | (Vd))
 #define FMAX4S(Vd, Vn, Vm) WORD $(0x4e20f400 | ((Vm) << 16) | ((Vn) << 5) | (Vd))
+#define FMLA4S(Vd, Vn, Vm) WORD $(0x4e20cc00 | ((Vm) << 16) | ((Vn) << 5) | (Vd))
 
 #define ROWS(P)      \
 	MOVD P, R13  \
@@ -57,8 +58,7 @@
 	FSUB4S(28, 10, 14)         \
 	ABS(V28)                   \
 	FADD4S(27, 27, 28)         \
-	FMUL4S(27, 27, 17)         \
-	FADD4S(0, 0, 27)           \
+	FMLA4S(0, 27, 17)         \
 	                           \
 	FSUB4S(27, 5, 6)           \
 	ABS(V27)                   \
@@ -74,8 +74,7 @@
 	FSUB4S(28, 13, 14)         \
 	ABS(V28)                   \
 	FADD4S(27, 27, 28)         \
-	FMUL4S(27, 27, 17)         \
-	FADD4S(1, 1, 27)           \
+	FMLA4S(1, 27, 17)         \
 	                           \
 	FSUB4S(27, 7, 6)           \
 	ABS(V27)                   \
@@ -91,8 +90,7 @@
 	FSUB4S(28, 15, 14)         \
 	ABS(V28)                   \
 	FADD4S(27, 27, 28)         \
-	FMUL4S(27, 27, 17)         \
-	FADD4S(2, 2, 27)           \
+	FMLA4S(2, 27, 17)         \
 	                           \
 	FSUB4S(27, 10, 6)          \
 	ABS(V27)                   \
@@ -108,26 +106,21 @@
 	FSUB4S(28, 16, 14)         \
 	ABS(V28)                   \
 	FADD4S(27, 27, 28)         \
-	FMUL4S(27, 27, 17)         \
-	FADD4S(3, 3, 27)
+	FMLA4S(3, 27, 17)
 
 #define OUTPLANE(P, D)       \
 	ROWS(P)              \
 	VLD1 (R15), [V27.S4] \
 	VLD1 (R16), [V28.S4] \
-	FMUL4S(28, 28, 3)    \
-	FADD4S(27, 27, 28)   \
+	FMLA4S(27, 28, 3)    \
 	ADD  $4, R15, R19    \
 	VLD1 (R19), [V28.S4] \
-	FMUL4S(28, 28, 2)    \
-	FADD4S(27, 27, 28)   \
+	FMLA4S(27, 28, 2)    \
 	SUB  $4, R15, R19    \
 	VLD1 (R19), [V28.S4] \
-	FMUL4S(28, 28, 1)    \
-	FADD4S(27, 27, 28)   \
+	FMLA4S(27, 28, 1)    \
 	VLD1 (R14), [V28.S4] \
-	FMUL4S(28, 28, 0)    \
-	FADD4S(27, 27, 28)   \
+	FMLA4S(27, 28, 0)    \
 	FDIV4S(27, 27, 26)   \
 	VST1 [V27.S4], (D)
 
@@ -145,18 +138,18 @@
 	VDUP R19, V25.S4     \
 	FMUL4S(25, 25, MUL)  \
 	                     \
-	FMUL4S(0, 0, 25)     \
-	FADD4S(0, 0, 20)     \
-	FMAX4S(0, 0, 21)     \
-	FMUL4S(1, 1, 25)     \
-	FADD4S(1, 1, 20)     \
-	FMAX4S(1, 1, 21)     \
-	FMUL4S(2, 2, 25)     \
-	FADD4S(2, 2, 20)     \
-	FMAX4S(2, 2, 21)     \
-	FMUL4S(3, 3, 25)     \
-	FADD4S(3, 3, 20)     \
-	FMAX4S(3, 3, 21)     \
+	VORR V20.B16, V20.B16, V27.B16 \
+	FMLA4S(27, 0, 25)     \
+	FMAX4S(0, 27, 21)     \
+	VORR V20.B16, V20.B16, V27.B16 \
+	FMLA4S(27, 1, 25)     \
+	FMAX4S(1, 27, 21)     \
+	VORR V20.B16, V20.B16, V27.B16 \
+	FMLA4S(27, 2, 25)     \
+	FMAX4S(2, 27, 21)     \
+	VORR V20.B16, V20.B16, V27.B16 \
+	FMLA4S(27, 3, 25)     \
+	FMAX4S(3, 27, 21)     \
 	                     \
 	VORR V20.B16, V20.B16, V26.B16 \
 	FADD4S(26, 26, 0)    \

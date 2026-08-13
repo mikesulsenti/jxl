@@ -8,6 +8,7 @@
 #define FDIV4S(Vd, Vn, Vm) WORD $(0x6e20fc00 | ((Vm) << 16) | ((Vn) << 5) | (Vd))
 #define FMAX4S(Vd, Vn, Vm) WORD $(0x4e20f400 | ((Vm) << 16) | ((Vn) << 5) | (Vd))
 #define MOV16B(Vd, Vn)     WORD $(0x4ea01c00 | ((Vn) << 16) | ((Vn) << 5) | (Vd))
+#define FMLA4S(Vd, Vn, Vm) WORD $(0x4e20cc00 | ((Vm) << 16) | ((Vn) << 5) | (Vd))
 
 #define ABS(V) VAND V20.B16, V.B16, V.B16
 
@@ -24,22 +25,17 @@
 	FMUL4S(11, 11, 16)   \
 	FSUB4S(12, 9, 1)     \
 	ABS(V12)             \
-	FMUL4S(12, 12, 17)   \
-	FADD4S(11, 11, 12)   \
+	FMLA4S(11, 12, 17)   \
 	FSUB4S(12, 10, 2)    \
 	ABS(V12)             \
-	FMUL4S(12, 12, 18)   \
-	FADD4S(11, 11, 12)   \
-	FMUL4S(11, 11, 7)    \
-	FADD4S(11, 11, 19)   \
-	FMAX4S(11, 11, 13)   \
+	FMLA4S(11, 12, 18)   \
+	MOV16B(12, 19)       \
+	FMLA4S(12, 11, 7)    \
+	FMAX4S(11, 12, 13)   \
 	FADD4S(6, 6, 11)     \
-	FMUL4S(12, 11, 8)    \
-	FADD4S(3, 3, 12)     \
-	FMUL4S(12, 11, 9)    \
-	FADD4S(4, 4, 12)     \
-	FMUL4S(12, 11, 10)   \
-	FADD4S(5, 5, 12)
+	FMLA4S(3, 11, 8)     \
+	FMLA4S(4, 11, 9)     \
+	FMLA4S(5, 11, 10)
 
 #define HALF(MUL)                    \
 	MOVWU (R7), R14              \

@@ -17,22 +17,17 @@
 	VFMULVF F0, V12, V12    \
 	VFSUBVV V2, V10, V13    \
 	ABS(V13)                \
-	VFMULVF F1, V13, V13    \
-	VFADDVV V13, V12, V12   \
+	VFMACCVF V13, F1, V12   \
 	VFSUBVV V3, V11, V13    \
 	ABS(V13)                \
-	VFMULVF F2, V13, V13    \
-	VFADDVV V13, V12, V12   \
-	VFMULVV V8, V12, V12    \
-	VFADDVF F3, V12, V12    \
-	VFMAXVV V15, V12, V12   \
+	VFMACCVF V13, F2, V12   \
+	VFMVVF  F3, V13         \
+	VFMACCVV V12, V8, V13   \
+	VFMAXVV V15, V13, V12   \
 	VFADDVV V12, V7, V7     \
-	VFMULVV V12, V9, V13    \
-	VFADDVV V13, V4, V4     \
-	VFMULVV V12, V10, V13   \
-	VFADDVV V13, V5, V5     \
-	VFMULVV V12, V11, V13   \
-	VFADDVV V13, V6, V6
+	VFMACCVV V12, V9, V4    \
+	VFMACCVV V12, V10, V5   \
+	VFMACCVV V12, V11, V6
 
 // func epf2RVV(dst, src *[3]*float32, stride int, sigma *float32, sigmaStride int,
 //	k *[6][8]float32, y, x0, x1 int)
