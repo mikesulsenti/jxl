@@ -702,3 +702,297 @@ func TestBlockContextMapRoundTrip(t *testing.T) {
 
 	t.Logf("%d block context maps round-tripped, %d of them custom", cases, custom)
 }
+
+func trivialTree() *maTree {
+	return &maTree{nodes: []treeNode{{property: -1 - predGradient, child: 1}}}
+}
+
+func TestLFAndHFMetadataRoundTrip(t *testing.T) {
+	rng := rand.New(rand.NewPCG(71, 73))
+
+	for _, dims := range [][2]int{{64, 48}, {8, 8}, {200, 130}} {
+		f := testFrame(dims[0], dims[1])
+		v := f.vardct
+
+		f.lfQuant.factors = lfQuantDefault
+		v.cmap.ytoxLF, v.cmap.ytobLF = 127, -128
+
+		for by := range v.bh {
+			for bx := range v.bw {
+				pos := by*v.bw + bx
+
+				if v.transform[pos] != invalidTransform {
+					continue
+				}
+
+				tr := hfDCT
+
+				if bx%2 == 0 && by%2 == 0 && bx+2 <= v.bw && by+2 <= v.bh && rng.IntN(3) == 0 {
+					tr = hfDCT16X16
+				}
+
+				cx, cy := tr.blocks()
+				q := int32(1 + rng.IntN(200))
+
+				for iy := range cy {
+					for ix := range cx {
+						id := uint8(tr)
+
+						if ix == 0 && iy == 0 {
+							id |= 128
+						}
+
+						v.transform[(by+iy)*v.bw+bx+ix] = id
+						v.rawQuant[(by+iy)*v.bw+bx+ix] = q
+					}
+				}
+			}
+		}
+
+		for i := range v.epf {
+			v.epf[i] = uint8(rng.IntN(8))
+		}
+
+		for i := range v.ytox {
+			v.ytox[i] = int8(rng.IntN(256) - 128)
+			v.ytob[i] = int8(rng.IntN(256) - 128)
+		}
+
+		for c := range 3 {
+			for i := range v.lf[c] {
+				v.lf[c][i] = float32(rng.NormFloat64()) * 0.02
+			}
+		}
+
+		target := make([][]float32, 3)
+
+		for c := range 3 {
+			target[c] = append([]float32(nil), v.lf[c]...)
+		}
+
+		wantTransform := append([]uint8(nil), v.transform...)
+		wantQuant := append([]int32(nil), v.rawQuant...)
+		wantEPF := append([]uint8(nil), v.epf...)
+		wantYtoX := append([]int8(nil), v.ytox...)
+		wantYtoB := append([]int8(nil), v.ytob...)
+
+		var w bitWriter
+
+		hdr := groupHeader{wp: defaultWeightedHeader()}
+
+		f.encodeVarDCTLF(&w, 0, &hdr, trivialTree())
+		f.encodeHFMetadata(&w, 0, &hdr, trivialTree())
+
+		if err := w.err(); err != nil {
+			t.Fatalf("%v: write gave %v", dims, err)
+		}
+
+		wantLF := make([][]float32, 3)
+
+		for c := range 3 {
+			wantLF[c] = append([]float32(nil), v.lf[c]...)
+		}
+
+		g := testFrame(dims[0], dims[1])
+		g.lfQuant.factors = lfQuantDefault
+		g.vardct.cmap.ytoxLF, g.vardct.cmap.ytobLF = 127, -128
+
+		r := newBitReader(append(w.bytes(), make([]byte, 64)...))
+
+		g.decodeVarDCTLF(r, 0, nil)
+		g.decodeHFMetadata(r, 0, nil)
+
+		if err := r.err(); err != nil {
+			t.Fatalf("%v: read gave %v", dims, err)
+		}
+
+		gv := g.vardct
+
+		for i := range wantTransform {
+			if gv.transform[i] != wantTransform[i] || gv.rawQuant[i] != wantQuant[i] {
+				t.Fatalf("%v: block %d is transform %d quant %d, want %d and %d",
+					dims, i, gv.transform[i], gv.rawQuant[i], wantTransform[i], wantQuant[i])
+			}
+
+			if gv.epf[i] != wantEPF[i] {
+				t.Fatalf("%v: block %d sharpness %d, want %d", dims, i, gv.epf[i], wantEPF[i])
+			}
+		}
+
+		for i := range wantYtoX {
+			if gv.ytox[i] != wantYtoX[i] || gv.ytob[i] != wantYtoB[i] {
+				t.Fatalf("%v: tile %d correlation %d/%d, want %d/%d",
+					dims, i, gv.ytox[i], gv.ytob[i], wantYtoX[i], wantYtoB[i])
+			}
+		}
+
+		for c := range 3 {
+			for i := range wantLF[c] {
+				if gv.lf[c][i] != wantLF[c][i] {
+					t.Fatalf("%v: channel %d lf sample %d is %g, want %g",
+						dims, c, i, gv.lf[c][i], wantLF[c][i])
+				}
+			}
+		}
+
+		invQuantLF := float32(globalScaleDenom) /
+			(float32(v.quant.globalScale) * float32(v.quant.quantLF))
+
+		for c := range 3 {
+			step := float64(f.lfQuant.factors[c] * invQuantLF)
+
+			for i := range target[c] {
+				if d := math.Abs(float64(gv.lf[c][i] - target[c][i])); d > step*0.5001 {
+					t.Fatalf("%v: channel %d lf sample %d is %g from the target, half a step is %g",
+						dims, c, i, d, step*0.5)
+				}
+			}
+		}
+	}
+}
+
+func TestHFMetadataRejectsQuant(t *testing.T) {
+	f := testFrame(16, 16)
+	v := f.vardct
+
+	for i := range v.transform {
+		v.transform[i] = 128 | uint8(hfDCT)
+		v.rawQuant[i] = 257
+	}
+
+	var w bitWriter
+
+	f.encodeHFMetadata(&w, 0, &groupHeader{wp: defaultWeightedHeader()}, trivialTree())
+
+	if w.err() != ErrInvalid {
+		t.Fatalf("a quantiser of 257 gave %v, want %v", w.err(), ErrInvalid)
+	}
+}
+
+func TestVarDCTBodyRoundTrip(t *testing.T) {
+	rng := rand.New(rand.NewPCG(83, 89))
+
+	for _, dims := range [][2]int{{64, 48}, {8, 8}, {120, 96}} {
+		f := testFrame(dims[0], dims[1])
+		v := f.vardct
+
+		f.lfQuant.factors = lfQuantDefault
+
+		for i := range v.transform {
+			v.transform[i] = 128 | uint8(hfDCT)
+			v.rawQuant[i] = 200
+		}
+
+		pixels := make([][]float32, 3)
+
+		for c := range 3 {
+			pixels[c] = make([]float32, len(v.pixels[c]))
+
+			for i := range pixels[c] {
+				pixels[c][i] = float32(rng.NormFloat64()) * 0.1
+			}
+		}
+
+		var enc worker
+
+		enc.alloc(f, 1)
+
+		s := &enc.dct
+		stride := v.bw * blockDim
+
+		for by := range v.bh {
+			for bx := range v.bw {
+				b := by*v.bw + bx
+
+				for c := range 3 {
+					var buf, lf [blockSize]float32
+
+					for y := range blockDim {
+						copy(buf[y*blockDim:], pixels[c][(by*blockDim+y)*stride+bx*blockDim:][:blockDim])
+					}
+
+					if !transformFromPixels(hfDCT, buf[:], lf[:], s.scratch) {
+						t.Fatal("the plain transform was refused")
+					}
+
+					s.block[c] = append(s.block[c][:0], buf[:]...)
+					v.lf[c][b] = lf[0]
+				}
+
+				v.quantizeBlock(s, hfDCT, v.quant.invGlobalScale(), uint32(v.rawQuant[b]),
+					v.cmap.yToX(0), v.cmap.yToB(0), blockSize, b*blockSize)
+			}
+		}
+
+		for c := range 3 {
+			for b := range v.bw * v.bh {
+				s.coeffs[c][b*blockSize] = 0
+			}
+		}
+
+		hist, counts, err := f.buildACHistograms(s, []int{0})
+		if err != nil {
+			t.Fatalf("%v: histograms gave %v", dims, err)
+		}
+
+		var w bitWriter
+
+		hdr := groupHeader{wp: defaultWeightedHeader()}
+
+		f.encodeVarDCTLF(&w, 0, &hdr, trivialTree())
+		f.encodeHFMetadata(&w, 0, &hdr, trivialTree())
+		codes := f.encodeHFGlobal(&w, hist, counts)
+
+		if err := w.err(); err != nil {
+			t.Fatalf("%v: header gave %v", dims, err)
+		}
+
+		hist.resize(f.acContexts() + zeroDensityContextLimit - zeroDensityContextCount)
+
+		sw := symbolWriter{codes: codes}
+
+		if err := f.encodeVarDCTGroup(&w, 0, s, hist, &sw, 0); err != nil {
+			t.Fatalf("%v: group gave %v", dims, err)
+		}
+
+		if err := w.err(); err != nil {
+			t.Fatalf("%v: body gave %v", dims, err)
+		}
+
+		g := testFrame(dims[0], dims[1])
+		g.lfQuant.factors = lfQuantDefault
+
+		r := newBitReader(append(w.bytes(), make([]byte, 64)...))
+
+		g.decodeVarDCTLF(r, 0, nil)
+		g.decodeHFMetadata(r, 0, nil)
+		g.decodeHFGlobal(r, nil)
+
+		if err := r.err(); err != nil {
+			t.Fatalf("%v: headers read gave %v", dims, err)
+		}
+
+		var dec worker
+
+		dec.alloc(g, 1)
+
+		if err := g.decodeVarDCTGroup(&dec, 0, []*bitReader{r}); err != nil {
+			t.Fatalf("%v: group read gave %v", dims, err)
+		}
+
+		var worst float64
+
+		for c := range 3 {
+			for i := range pixels[c] {
+				d := math.Abs(float64(g.vardct.pixels[c][i] - pixels[c][i]))
+				worst = math.Max(worst, d)
+			}
+		}
+
+		if worst > 0.02 {
+			t.Fatalf("%v: reconstruction is %g from the source", dims, worst)
+		}
+
+		t.Logf("%v: reconstructed to within %.5f", dims, worst)
+	}
+}

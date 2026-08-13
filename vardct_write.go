@@ -379,3 +379,212 @@ func (d *dequantMatrices) write(w *bitWriter) {
 
 	w.bit(true)
 }
+
+func (f *frame) encodeVarDCTLF(w *bitWriter, g int, hdr *groupHeader, tree *maTree) {
+	v := f.vardct
+	rc := f.lfGroupBlockRect(g)
+
+	if !f.hdr.is444() {
+		w.setErr(ErrUnsupported)
+
+		return
+	}
+
+	w.bits(2, 0)
+
+	invQuantLF := float32(globalScaleDenom) /
+		(float32(v.quant.globalScale) * float32(v.quant.quantLF))
+
+	var fac [3]float32
+
+	for c := range 3 {
+		fac[c] = f.lfQuant.factors[c] * invQuantLF
+	}
+
+	cflX := v.cmap.yToX(v.cmap.ytoxLF)
+	cflB := v.cmap.yToB(v.cmap.ytobLF)
+
+	img := &modImage{bitDepth: f.modular.bitDepth}
+
+	for range 3 {
+		img.channels = append(img.channels, newModChannel(rc.w, rc.h, 0, 0))
+	}
+
+	for y := range rc.h {
+		qy, qx, qb := img.channels[0].row(y), img.channels[1].row(y), img.channels[2].row(y)
+		off := (rc.y0+y)*v.bw + rc.x0
+
+		for x := range rc.w {
+			qy[x] = int32(math.Round(float64(v.lf[1][off+x] / fac[1])))
+			ry := float32(qy[x]) * fac[1]
+
+			qx[x] = int32(math.Round(float64((v.lf[0][off+x] - ry*cflX) / fac[0])))
+			qb[x] = int32(math.Round(float64((v.lf[2][off+x] - ry*cflB) / fac[2])))
+		}
+	}
+
+	img.encodeStream(w, hdr, tree, 1+g)
+
+	if w.err() != nil {
+		return
+	}
+
+	for y := range rc.h {
+		qy, qx, qb := img.channels[0].row(y), img.channels[1].row(y), img.channels[2].row(y)
+		off := (rc.y0+y)*v.bw + rc.x0
+
+		for x := range rc.w {
+			inY := float32(qy[x]) * fac[1]
+
+			v.lf[1][off+x] = inY
+			v.lf[0][off+x] = inY*cflX + float32(qx[x])*fac[0]
+			v.lf[2][off+x] = inY*cflB + float32(qb[x])*fac[2]
+
+			if v.bctx.numLFContexts <= 1 {
+				continue
+			}
+
+			bucket := countAbove(v.bctx.lfThresholds[0], qx[x])
+			bucket *= len(v.bctx.lfThresholds[2]) + 1
+			bucket += countAbove(v.bctx.lfThresholds[2], qb[x])
+			bucket *= len(v.bctx.lfThresholds[1]) + 1
+			bucket += countAbove(v.bctx.lfThresholds[1], qy[x])
+
+			v.quantLF[off+x] = uint8(bucket)
+		}
+	}
+}
+
+func (f *frame) encodeHFMetadata(w *bitWriter, g int, hdr *groupHeader, tree *maTree) {
+	v := f.vardct
+	rc := f.lfGroupBlockRect(g)
+	cw, ch := divCeil(rc.w, 8), divCeil(rc.h, 8)
+
+	var types, quants []int32
+
+	for y := range rc.h {
+		for x := range rc.w {
+			pos := (rc.y0+y)*v.bw + rc.x0 + x
+
+			if v.transform[pos] < 128 {
+				continue
+			}
+
+			if v.rawQuant[pos] < 1 || v.rawQuant[pos] > 256 {
+				w.setErr(ErrInvalid)
+
+				return
+			}
+
+			types = append(types, int32(v.transform[pos]&127))
+			quants = append(quants, v.rawQuant[pos]-1)
+		}
+	}
+
+	if len(types) == 0 || len(types) > rc.w*rc.h {
+		w.setErr(ErrInvalid)
+
+		return
+	}
+
+	w.bits(ceilLog2(uint32(rc.w*rc.h)), uint64(len(types)-1))
+
+	img := &modImage{bitDepth: f.modular.bitDepth}
+	img.channels = []*modChannel{
+		newModChannel(cw, ch, 3, 3),
+		newModChannel(cw, ch, 3, 3),
+		newModChannel(len(types), 2, 0, 0),
+		newModChannel(rc.w, rc.h, 0, 0),
+	}
+
+	cx0, cy0 := rc.x0>>3, rc.y0>>3
+
+	for y := range ch {
+		rx, rb := img.channels[0].row(y), img.channels[1].row(y)
+		off := (cy0+y)*v.cw + cx0
+
+		for x := range cw {
+			rx[x] = int32(v.ytox[off+x])
+			rb[x] = int32(v.ytob[off+x])
+		}
+	}
+
+	copy(img.channels[2].row(0), types)
+	copy(img.channels[2].row(1), quants)
+
+	for y := range rc.h {
+		row := img.channels[3].row(y)
+		off := (rc.y0+y)*v.bw + rc.x0
+
+		for x := range rc.w {
+			row[x] = int32(v.epf[off+x])
+		}
+	}
+
+	img.encodeStream(w, hdr, tree, 1+2*f.hdr.numLFGroups()+g)
+}
+
+func (f *frame) encodeHFGlobal(w *bitWriter, hist *histograms, counts [][]uint32) [][]prefixCode {
+	v := f.vardct
+
+	if f.hdr.pass.numPasses != 1 {
+		w.setErr(ErrUnsupported)
+
+		return nil
+	}
+
+	v.dq.write(w)
+
+	if w.err() != nil {
+		return nil
+	}
+
+	w.bits(ceilLog2(uint32(f.hdr.numGroups())), uint64(v.numHistograms-1))
+	w.bits(2, 2)
+
+	return hist.write(w, counts)
+}
+
+func (f *frame) acContexts() int {
+	return int(f.vardct.numHistograms) * f.vardct.bctx.numACContexts()
+}
+
+func (f *frame) buildACHistograms(s *dctScratch, groups []int) (*histograms, [][]uint32, error) {
+	v := f.vardct
+	numContexts := f.acContexts()
+
+	values := make([][]uint32, numContexts+zeroDensityContextLimit-zeroDensityContextCount)
+
+	for _, g := range groups {
+		err := v.walkACGroup(f.blockGroupRect(g), s, 0, 0, 0, &v.passes[0].orders,
+			func(ctx int, packed uint32) {
+				values[ctx] = append(values[ctx], packed)
+			})
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	m, clustered := clusterContexts(values[:numContexts], 256)
+
+	for _, vs := range values[numContexts:] {
+		clustered[0] = append(clustered[0], vs...)
+	}
+
+	hist, counts := buildHistograms(m, clustered)
+
+	return hist, counts, nil
+}
+
+func (f *frame) encodeVarDCTGroup(w *bitWriter, g int, s *dctScratch, hist *histograms,
+	sw *symbolWriter, histIdx int,
+) error {
+	v := f.vardct
+
+	w.bits(ceilLog2(v.numHistograms), uint64(histIdx))
+
+	return v.walkACGroup(f.blockGroupRect(g), s, 0, 0, histIdx, &v.passes[0].orders,
+		func(ctx int, packed uint32) {
+			sw.writeUnsigned(hist, w, ctx, packed)
+		})
+}
