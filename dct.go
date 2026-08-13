@@ -16,6 +16,7 @@ const (
 var (
 	dctMultipliers [9][]float32
 	dctResample    [6][]float32
+	idctConsts     [31][8]float32
 )
 
 func init() {
@@ -40,6 +41,17 @@ func init() {
 		}
 
 		dctResample[l] = s
+	}
+
+	c := append([]float32{dctSqrt2}, dctMultipliers[2]...)
+	c = append(c, dctMultipliers[3]...)
+	c = append(c, dctMultipliers[4]...)
+	c = append(c, dctMultipliers[5]...)
+
+	for i, v := range c {
+		for j := range idctConsts[i] {
+			idctConsts[i][j] = v
+		}
 	}
 }
 
@@ -182,7 +194,15 @@ func dct1d(n int, mem, tmp []float32) {
 }
 
 func idctColumns(n, m int, src []float32, srcStride int, dst []float32, dstStride int, tmp []float32) {
-	for j := range m {
+	j := 0
+
+	for ; j+8 <= m; j += 8 {
+		if !idctCols8(n, src[j:], srcStride, dst[j:], dstStride, tmp) {
+			break
+		}
+	}
+
+	for ; j < m; j++ {
 		idct1d(n, src[j:], srcStride, dst[j:], dstStride, tmp)
 	}
 }
@@ -205,6 +225,16 @@ func dctColumns(n, m int, src []float32, srcStride int, dst []float32, dstStride
 }
 
 func transposeBlock(rows, cols int, src []float32, srcStride int, dst []float32, dstStride int) {
+	if useTranspose8 && rows&7 == 0 && cols&7 == 0 {
+		for y := 0; y < rows; y += 8 {
+			for x := 0; x < cols; x += 8 {
+				transpose8(src[y*srcStride+x:], srcStride, dst[x*dstStride+y:], dstStride)
+			}
+		}
+
+		return
+	}
+
 	for y := range rows {
 		row := src[y*srcStride : y*srcStride+cols]
 
@@ -215,19 +245,26 @@ func transposeBlock(rows, cols int, src []float32, srcStride int, dst []float32,
 }
 
 func idct2d(rows, cols int, data, scratch []float32) {
+	if rows == blockDim && cols == blockDim && idct8x8(data) {
+		return
+	}
+
 	n := rows * cols
 	block := scratch[:n]
 	tmp := scratch[n:]
 
 	if rows < cols {
 		transposeBlock(rows, cols, data, cols, block, rows)
-		copy(data[:n], block)
+		idctColumns(cols, rows, block, rows, data, rows, tmp)
+		transposeBlock(cols, rows, data, rows, block, cols)
+		idctColumns(rows, cols, block, cols, data, cols, tmp)
+
+		return
 	}
 
 	idctColumns(cols, rows, data, rows, block, rows, tmp)
 	transposeBlock(cols, rows, block, rows, data, cols)
-	idctColumns(rows, cols, data, cols, block, cols, tmp)
-	copy(data[:n], block)
+	idctColumns(rows, cols, data, cols, data, cols, tmp)
 }
 
 func scaledDCT2D(rows, cols int, in, out []float32, outStride int, scratch []float32) {
