@@ -2,6 +2,7 @@
 # output where there is no reference, from
 # go test -run TestAgainstReference -conformance.update
 dct_d0.jxl 4.1561201214790344e-05
+dct_epf3.jxl 4.0261074900627136e-05
 dct_gray.jxl 1.3113021850585938e-06
 dct_mid_e1.jxl 4.4539570808410645e-05
 dct_mid_e3.jxl 4.4539570808410645e-05
