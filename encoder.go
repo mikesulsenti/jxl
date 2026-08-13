@@ -179,86 +179,103 @@ func (f *frame) regionFree(bx, by, cx, cy int) bool {
 	return true
 }
 
-func (f *frame) chooseTransforms(s *dctScratch) {
+func newLFBuffers() [3][]float32 {
+	var lf [3][]float32
+
+	for c := range 3 {
+		lf[c] = make([]float32, maxCoeffBlocks*maxCoeffBlocks)
+	}
+
+	return lf
+}
+
+func (f *frame) chooseTransforms(scratch []dctScratch) {
 	v := f.vardct
 
 	for i := range v.transform {
 		v.transform[i] = invalidTransform
 	}
 
-	var lf [3][]float32
-
-	for c := range 3 {
-		lf[c] = make([]float32, maxCoeffBlocks*maxCoeffBlocks)
-	}
-
 	rate8 := make([]float64, v.bw*v.bh)
 	sse8 := make([]float64, v.bw*v.bh)
 
-	for by := range v.bh {
-		for bx := range v.bw {
-			rate8[by*v.bw+bx], sse8[by*v.bw+bx] = f.blockCost(s, hfDCT, bx, by, &lf)
-		}
-	}
+	nw, numGroups := len(scratch), f.hdr.numGroups()
 
-	for by := range v.bh {
-		for bx := range v.bw {
-			if v.transform[by*v.bw+bx] != invalidTransform {
-				continue
+	overTasks(nw, numGroups, func(w, g int) error {
+		s, rc, lf := &scratch[w], f.blockGroupRect(g), newLFBuffers()
+
+		for by := range rc.h {
+			for bx := range rc.w {
+				pos := (rc.y0+by)*v.bw + rc.x0 + bx
+
+				rate8[pos], sse8[pos] = f.blockCost(s, hfDCT, rc.x0+bx, rc.y0+by, &lf)
 			}
+		}
 
-			best, saving := hfDCT, 0.0
+		return nil
+	})
 
-			for _, t := range transformCandidates {
-				cx, cy := t.blocks()
+	overTasks(nw, numGroups, func(w, g int) error {
+		s, rc, lf := &scratch[w], f.blockGroupRect(g), newLFBuffers()
 
-				if !f.regionFree(bx, by, cx, cy) {
+		for by := range rc.h {
+			for bx := range rc.w {
+				x, y := rc.x0+bx, rc.y0+by
+
+				if v.transform[y*v.bw+x] != invalidTransform {
 					continue
 				}
 
-				baseRate, baseSSE := 0.0, 0.0
+				best, saving := hfDCT, 0.0
+
+				for _, t := range transformCandidates {
+					cx, cy := t.blocks()
+
+					if !f.regionFree(x, y, cx, cy) {
+						continue
+					}
+
+					baseRate, baseSSE := 0.0, 0.0
+
+					for iy := range cy {
+						for ix := range cx {
+							baseRate += rate8[(y+iy)*v.bw+x+ix]
+							baseSSE += sse8[(y+iy)*v.bw+x+ix]
+						}
+					}
+
+					rate, sse := f.blockCost(s, t, x, y, &lf)
+
+					if rate < baseRate*transformRateMargin && sse <= baseSSE && baseRate-rate > saving {
+						best, saving = t, baseRate-rate
+					}
+				}
+
+				cx, cy := best.blocks()
 
 				for iy := range cy {
 					for ix := range cx {
-						baseRate += rate8[(by+iy)*v.bw+bx+ix]
-						baseSSE += sse8[(by+iy)*v.bw+bx+ix]
+						id := uint8(best)
+
+						if ix == 0 && iy == 0 {
+							id |= 128
+						}
+
+						v.transform[(y+iy)*v.bw+x+ix] = id
 					}
-				}
-
-				rate, sse := f.blockCost(s, t, bx, by, &lf)
-
-				if rate < baseRate*transformRateMargin && sse <= baseSSE && baseRate-rate > saving {
-					best, saving = t, baseRate-rate
-				}
-			}
-
-			cx, cy := best.blocks()
-
-			for iy := range cy {
-				for ix := range cx {
-					id := uint8(best)
-
-					if ix == 0 && iy == 0 {
-						id |= 128
-					}
-
-					v.transform[(by+iy)*v.bw+bx+ix] = id
 				}
 			}
 		}
-	}
+
+		return nil
+	})
 }
 
 func (f *frame) transformGroup(s *dctScratch, g int) bool {
 	v := f.vardct
 	rc := f.blockGroupRect(g)
+	lf := newLFBuffers()
 	offset := 0
-
-	var lf [3][]float32
-
-	for c := range 3 {
-		lf[c] = make([]float32, maxCoeffBlocks*maxCoeffBlocks)
-	}
 
 	for by := range rc.h {
 		for bx := range rc.w {
@@ -303,19 +320,33 @@ func (f *frame) transformGroup(s *dctScratch, g int) bool {
 	return true
 }
 
-func (f *frame) encodeSections(s *dctScratch) ([][]byte, error) {
+func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 	numLF := f.hdr.numLFGroups()
 	numGroups := f.hdr.numGroups()
 
-	values := f.acValues()
+	nw := len(scratch)
+	perWorker := make([][][]uint32, nw)
 
-	for g := range numGroups {
-		if !f.transformGroup(s, g) {
-			return nil, ErrUnsupported
+	for i := range perWorker {
+		perWorker[i] = f.acValues()
+	}
+
+	err := overTasks(nw, numGroups, func(w, g int) error {
+		if !f.transformGroup(&scratch[w], g) {
+			return ErrUnsupported
 		}
 
-		if err := f.collectACGroup(s, g, values); err != nil {
-			return nil, err
+		return f.collectACGroup(&scratch[w], g, perWorker[w])
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	values := perWorker[0]
+
+	for _, other := range perWorker[1:] {
+		for i, vs := range other {
+			values[i] = append(values[i], vs...)
 		}
 	}
 
@@ -347,14 +378,15 @@ func (f *frame) encodeSections(s *dctScratch) ([][]byte, error) {
 
 	sw := symbolWriter{codes: codes}
 
-	for g := range numGroups {
-		if !f.transformGroup(s, g) {
-			return nil, ErrUnsupported
+	err = overTasks(nw, numGroups, func(w, g int) error {
+		if !f.transformGroup(&scratch[w], g) {
+			return ErrUnsupported
 		}
 
-		if err := f.encodeVarDCTGroup(sections[2+numLF+g], g, s, hist, &sw, 0); err != nil {
-			return nil, err
-		}
+		return f.encodeVarDCTGroup(sections[2+numLF+g], g, &scratch[w], hist, &sw, 0)
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	for _, sec := range sections {
@@ -382,7 +414,7 @@ func (f *frame) encodeSections(s *dctScratch) ([][]byte, error) {
 	return out, nil
 }
 
-func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32) ([]byte, error) {
+func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32, threads int) ([]byte, error) {
 	if w <= 0 || h <= 0 {
 		return nil, ErrInvalid
 	}
@@ -413,13 +445,15 @@ func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32) ([]byte, error) 
 
 	f.fillXYB(&fwd, rgb, w, h)
 
-	var scratch dctScratch
+	scratch := make([]dctScratch, min(numThreads(threads), f.hdr.numGroups()))
 
-	scratch.alloc(f)
+	for i := range scratch {
+		scratch[i].alloc(f)
+	}
 
-	f.chooseTransforms(&scratch)
+	f.chooseTransforms(scratch)
 
-	body, err := f.encodeSections(&scratch)
+	body, err := f.encodeSections(scratch)
 	if err != nil {
 		return nil, err
 	}
@@ -440,6 +474,9 @@ func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32) ([]byte, error) 
 type EncodeOptions struct {
 	// Quality runs from 1 to 100. Zero means DefaultQuality.
 	Quality int
+	// Threads bounds the goroutines encoding one frame. Zero means GOMAXPROCS,
+	// one encodes serially.
+	Threads int
 }
 
 // DefaultQuality is the quality used when EncodeOptions.Quality is zero.
@@ -562,7 +599,7 @@ func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 
 	imageToLinear(m, &rgb, width, height)
 
-	data, err := encodeVarDCTImage(rgb, width, height, qualityToQuant(o.Quality))
+	data, err := encodeVarDCTImage(rgb, width, height, qualityToQuant(o.Quality), o.Threads)
 	if err != nil {
 		return err
 	}

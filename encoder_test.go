@@ -39,7 +39,7 @@ func TestEncodeDecodesBack(t *testing.T) {
 
 		rgb := gradientRGB(w, h)
 
-		data, err := encodeVarDCTImage(rgb, w, h, 200)
+		data, err := encodeVarDCTImage(rgb, w, h, 200, 0)
 		if err != nil {
 			t.Fatalf("%v: encode gave %v", dims, err)
 		}
@@ -108,7 +108,7 @@ func TestEncodeBlocky(t *testing.T) {
 
 	rgb := blockyRGB(rng, w, h)
 
-	data, err := encodeVarDCTImage(rgb, w, h, 200)
+	data, err := encodeVarDCTImage(rgb, w, h, 200, 0)
 	if err != nil {
 		t.Fatalf("encode gave %v", err)
 	}
@@ -149,7 +149,7 @@ func TestEncodeNoise(t *testing.T) {
 		}
 	}
 
-	data, err := encodeVarDCTImage(rgb, w, h, 250)
+	data, err := encodeVarDCTImage(rgb, w, h, 250, 0)
 	if err != nil {
 		t.Fatalf("encode gave %v", err)
 	}
@@ -329,6 +329,35 @@ func TestLinearFrom16MatchesDirect(t *testing.T) {
 		if got := linearFrom16(v); got != want {
 			t.Fatalf("linearFrom16(%d) is %v, want %v", v, got, want)
 		}
+	}
+}
+
+func TestEncodeThreadsAreDeterministic(t *testing.T) {
+	for _, dims := range [][2]int{{300, 260}, {512, 512}, {600, 129}} {
+		src := texturedImage(dims[0], dims[1])
+
+		var serial bytes.Buffer
+
+		if err := Encode(&serial, src, EncodeOptions{Threads: 1}); err != nil {
+			t.Fatalf("%v: serial encode gave %v", dims, err)
+		}
+
+		for _, threads := range []int{0, 2, 3, 8} {
+			for range 3 {
+				var buf bytes.Buffer
+
+				if err := Encode(&buf, src, EncodeOptions{Threads: threads}); err != nil {
+					t.Fatalf("%v: %d threads gave %v", dims, threads, err)
+				}
+
+				if !bytes.Equal(buf.Bytes(), serial.Bytes()) {
+					t.Fatalf("%v: %d threads gave %d bytes, serial gave %d",
+						dims, threads, buf.Len(), serial.Len())
+				}
+			}
+		}
+
+		t.Logf("%v: %d bytes, identical across 1, 2, 3 and 8 threads", dims, serial.Len())
 	}
 }
 

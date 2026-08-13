@@ -57,25 +57,30 @@ func BenchmarkEncode(b *testing.B) {
 	for _, dims := range [][2]int{{256, 256}, {1920, 1080}} {
 		src := texturedImage(dims[0], dims[1])
 
-		b.Run(fmt.Sprintf("%dx%d", dims[0], dims[1]), func(b *testing.B) {
-			var pixels int64
+		for _, tc := range []struct {
+			name    string
+			threads int
+		}{{"serial", 1}, {"threaded", 0}} {
+			b.Run(fmt.Sprintf("%dx%d/%s", dims[0], dims[1], tc.name), func(b *testing.B) {
+				var pixels int64
 
-			b.ReportAllocs()
+				b.ReportAllocs()
 
-			for b.Loop() {
-				if err := Encode(io.Discard, src); err != nil {
-					b.Fatal(err)
+				for b.Loop() {
+					if err := Encode(io.Discard, src, EncodeOptions{Threads: tc.threads}); err != nil {
+						b.Fatal(err)
+					}
+
+					pixels += int64(dims[0]) * int64(dims[1])
 				}
 
-				pixels += int64(dims[0]) * int64(dims[1])
-			}
+				b.StopTimer()
 
-			b.StopTimer()
-
-			if n := b.Elapsed().Seconds(); n > 0 {
-				b.ReportMetric(float64(pixels)/n/1e6, "Mpixel/s")
-			}
-		})
+				if n := b.Elapsed().Seconds(); n > 0 {
+					b.ReportMetric(float64(pixels)/n/1e6, "Mpixel/s")
+				}
+			})
+		}
 	}
 }
 
