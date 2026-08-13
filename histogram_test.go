@@ -81,8 +81,8 @@ func TestHybridUintRoundTrip(t *testing.T) {
 func TestContextMapRoundTrip(t *testing.T) {
 	rng := rand.New(rand.NewPCG(51, 53))
 
-	for _, clusters := range []int{1, 2, 3, 5, 8} {
-		for _, n := range []int{1, 2, 9, 64, 300} {
+	for _, clusters := range []int{1, 2, 3, 5, 8, 9, 40, 255} {
+		for _, n := range []int{1, 2, 9, 64, 300, 1000} {
 			if n < clusters {
 				continue
 			}
@@ -124,7 +124,7 @@ func TestContextMapRoundTrip(t *testing.T) {
 }
 
 func TestContextMapRejected(t *testing.T) {
-	for _, m := range [][]uint8{{0, 2}, {1}, {0, 1, 3}, {0, 1, 2, 3, 4, 5, 6, 7, 8}} {
+	for _, m := range [][]uint8{{0, 2}, {1}, {0, 1, 3}, {0, 1, 2, 4}} {
 		var w bitWriter
 
 		writeContextMap(&w, m)
@@ -133,6 +133,54 @@ func TestContextMapRejected(t *testing.T) {
 			t.Fatalf("%v was accepted", m)
 		}
 	}
+}
+
+func TestContextMapForms(t *testing.T) {
+	rng := rand.New(rand.NewPCG(121, 127))
+
+	forms := map[string]int{}
+
+	for _, clusters := range []int{2, 8, 9, 200} {
+		for _, n := range []int{4, 50, 2000} {
+			if n < clusters {
+				continue
+			}
+
+			m := make([]uint8, n)
+
+			for i := range m {
+				m[i] = uint8(rng.IntN(clusters))
+			}
+
+			for i := range clusters {
+				m[i] = uint8(i)
+			}
+
+			var w bitWriter
+
+			writeContextMap(&w, m)
+
+			if err := w.err(); err != nil {
+				t.Fatalf("clusters %d n %d: %v", clusters, n, err)
+			}
+
+			r := newBitReader(w.bytes())
+
+			if r.bit() {
+				forms["simple"]++
+			} else if r.bit() {
+				forms["coded with move to front"]++
+			} else {
+				forms["coded"]++
+			}
+		}
+	}
+
+	if len(forms) < 3 {
+		t.Fatalf("only these forms were ever chosen: %v", forms)
+	}
+
+	t.Logf("context map forms chosen: %v", forms)
 }
 
 func randomValues(rng *rand.Rand, n, kind int) []uint32 {

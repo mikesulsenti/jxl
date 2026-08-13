@@ -265,26 +265,32 @@ func TestModularMultiplier(t *testing.T) {
 	}
 }
 
+func TestModularManyLeaves(t *testing.T) {
+	rng := rand.New(rand.NewPCG(131, 137))
+
+	for _, leaves := range []int{9, 17, 40} {
+		src := randomModImage(rng, [][2]int{{40, 30}, {40, 30}}, 300)
+
+		tree := &maTree{nodes: serializeTree(randomTree(rng, leaves, 15, true))}
+
+		if err := roundTripModular(t, src, tree, 1, defaultWeightedHeader()); err != nil {
+			t.Fatalf("%d leaves: %v", leaves, err)
+		}
+	}
+}
+
 func TestModularRejected(t *testing.T) {
 	src := randomModImage(rand.New(rand.NewPCG(1, 2)), [][2]int{{8, 8}}, 100)
 
-	nine := &treeSpec{property: 0, val: 0, left: randomLeaf(rand.New(rand.NewPCG(3, 4)), false)}
-	cur := nine
-
-	for range 8 {
-		cur.right = &treeSpec{property: 2, val: 0,
-			left: &treeSpec{property: -1, predictor: predZero, mul: 1}}
-		cur = cur.right
-	}
-
-	cur.right = &treeSpec{property: -1, predictor: predZero, mul: 1}
-
 	var w bitWriter
 
-	src.encodeStream(&w, &groupHeader{wp: defaultWeightedHeader()}, &maTree{nodes: serializeTree(nine)}, 0)
+	src.encodeStream(&w, &groupHeader{
+		wp:         defaultWeightedHeader(),
+		transforms: []modTransform{{id: xformRCT, rctType: 6}},
+	}, &maTree{nodes: serializeTree(&treeSpec{property: -1, predictor: predZero, mul: 1})}, 0)
 
 	if w.err() != ErrUnsupported {
-		t.Fatalf("a ten leaf tree gave %v, want %v", w.err(), ErrUnsupported)
+		t.Fatalf("a transform gave %v, want %v", w.err(), ErrUnsupported)
 	}
 
 	var w2 bitWriter

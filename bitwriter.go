@@ -60,6 +60,24 @@ func (w *bitWriter) zeroPad() {
 	}
 }
 
+func (w *bitWriter) pos() int { return len(w.data)*8 + w.nbits }
+
+func (w *bitWriter) append(src *bitWriter) {
+	if src.fail != nil {
+		w.setErr(src.fail)
+
+		return
+	}
+
+	for _, b := range src.data {
+		w.bits(8, uint64(b))
+	}
+
+	if src.nbits > 0 {
+		w.bits(src.nbits, src.buf&(1<<src.nbits-1))
+	}
+}
+
 func (w *bitWriter) bytes() []byte {
 	w.zeroPad()
 

@@ -11,28 +11,29 @@ func (l *lz77Params) write(w *bitWriter) {
 	w.u32(l.minLength, dVal(3), dVal(4), dBitsOff(2, 5), dBitsOff(8, 9))
 }
 
-func writeContextMap(w *bitWriter, m []uint8) {
-	var (
-		seen     [256]bool
-		distinct int
-		maxVal   uint8
-	)
+func moveToFrontEncode(v []uint8) {
+	var mtf [256]uint8
 
-	for _, v := range m {
-		if !seen[v] {
-			seen[v] = true
-			distinct++
+	for i := range mtf {
+		mtf[i] = uint8(i)
+	}
+
+	for i, val := range v {
+		index := 0
+
+		for mtf[index] != val {
+			index++
 		}
 
-		maxVal = max(maxVal, v)
+		v[i] = uint8(index)
+
+		if index != 0 {
+			moveToFront(mtf[:], uint8(index))
+		}
 	}
+}
 
-	if distinct != int(maxVal)+1 {
-		w.setErr(ErrInvalid)
-
-		return
-	}
-
+func writeSimpleContextMap(w *bitWriter, m []uint8, maxVal uint8) {
 	bitsPerEntry := 0
 
 	for int(maxVal) >= 1<<bitsPerEntry {
@@ -57,8 +58,97 @@ func writeContextMap(w *bitWriter, m []uint8) {
 	}
 }
 
+func writeCodedContextMap(w *bitWriter, m []uint8, useMTF bool) {
+	entries := make([]uint8, len(m))
+	copy(entries, m)
+
+	if useMTF {
+		moveToFrontEncode(entries)
+	}
+
+	values := make([]uint32, len(entries))
+
+	for i, v := range entries {
+		values[i] = uint32(v)
+	}
+
+	h, counts := buildHistograms(singleContext[:], [][]uint32{values})
+
+	w.bit(false)
+	w.bit(useMTF)
+
+	sw := symbolWriter{codes: h.write(w, counts)}
+
+	if w.err() != nil {
+		return
+	}
+
+	for _, v := range values {
+		sw.writeUnsigned(h, w, 0, v)
+	}
+}
+
+func writeContextMap(w *bitWriter, m []uint8) {
+	var (
+		seen     [256]bool
+		distinct int
+		maxVal   uint8
+	)
+
+	for _, v := range m {
+		if !seen[v] {
+			seen[v] = true
+			distinct++
+		}
+
+		maxVal = max(maxVal, v)
+	}
+
+	if distinct != int(maxVal)+1 {
+		w.setErr(ErrInvalid)
+
+		return
+	}
+
+	candidates := make([]*bitWriter, 3)
+
+	for i := range candidates {
+		candidates[i] = &bitWriter{}
+	}
+
+	writeSimpleContextMap(candidates[0], m, maxVal)
+	writeCodedContextMap(candidates[1], m, false)
+	writeCodedContextMap(candidates[2], m, true)
+
+	best := -1
+
+	for i, c := range candidates {
+		if c.err() != nil {
+			continue
+		}
+
+		if best < 0 || c.pos() < candidates[best].pos() {
+			best = i
+		}
+	}
+
+	if best < 0 {
+		w.setErr(candidates[1].err())
+
+		return
+	}
+
+	w.append(candidates[best])
+}
+
 func (h *histograms) write(w *bitWriter, counts [][]uint32) [][]prefixCode {
 	if h.lz77.enabled || !h.usePrefix || h.logAlphaSize != huffmanMaxBits {
+		w.setErr(ErrUnsupported)
+
+		return nil
+	}
+
+	if len(counts) > 256 {
 		w.setErr(ErrUnsupported)
 
 		return nil
