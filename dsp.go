@@ -11,6 +11,8 @@ var epf2Asm func(dst, src *[3]*float32, stride int, sigma *float32, sigmaStride 
 
 var xybSRGBAsm func(x, y, b *float32, n int, k *[29][8]float32)
 
+var xybSRGB512Asm func(x, y, b *float32, n int, k *[29][16]float32)
+
 var gaborishAsm func(dst, top, mid, bot *float32, n int, k *[3][8]float32)
 
 var useIDCT8x8 bool
@@ -20,6 +22,8 @@ var useIDCTCols bool
 var useTranspose8 bool
 
 var useDequant bool
+
+var useDequant512 bool
 
 type dequantArgs struct {
 	out    [3]*float32

@@ -4,7 +4,11 @@ package jxl
 
 var hasAVX2 = cpuidAVX2()
 
+var hasAVX512 = cpuidAVX512()
+
 func cpuidAVX2() bool
+
+func cpuidAVX512() bool
 
 //go:noescape
 func epf0AVX2(dst, src *[3]*float32, stride int, sigma *float32, sigmaStride int,
@@ -22,6 +26,9 @@ func epf2AVX2(dst, src *[3]*float32, stride int, sigma *float32, sigmaStride int
 func xybSRGBAVX2(x, y, b *float32, n int, k *[29][8]float32)
 
 //go:noescape
+func xybSRGB512(x, y, b *float32, n int, k *[29][16]float32)
+
+//go:noescape
 func idct8x8AVX2(data *float32, k *[31][8]float32)
 
 //go:noescape
@@ -37,10 +44,15 @@ func dspInit() {
 	epf2Asm = epf2AVX2
 	xybSRGBAsm = xybSRGBAVX2
 	gaborishAsm = gaborishAVX2
+
+	if hasAVX512 {
+		xybSRGB512Asm = xybSRGB512
+	}
 	useIDCT8x8 = true
 	useIDCTCols = true
 	useTranspose8 = true
 	useDequant = true
+	useDequant512 = hasAVX512
 }
 
 //go:noescape
@@ -52,9 +64,18 @@ func idct16Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k
 //go:noescape
 func dequantAVX2(a *dequantArgs)
 
+//go:noescape
+func dequant512(a *dequantArgs)
+
 func dequant(a *dequantArgs) bool {
 	if !useDequant {
 		return false
+	}
+
+	if useDequant512 && a.n&15 == 0 {
+		dequant512(a)
+
+		return true
 	}
 
 	dequantAVX2(a)

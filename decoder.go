@@ -584,12 +584,25 @@ func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) {
 
 	var k *[29][8]float32
 
-	if srgb && xybSRGBAsm != nil {
+	var k512 *[29][16]float32
+
+	switch {
+	case srgb && xybSRGB512Asm != nil:
+		k512 = p.srgbConsts512()
+	case srgb && xybSRGBAsm != nil:
 		k = p.srgbConsts()
 	}
 
 	overRows(d.threads, h, func(y0, y1 int) {
 		lo, hi := y0*w, y1*w
+
+		if k512 != nil {
+			if m := (hi - lo) &^ 15; m > 0 {
+				xybSRGB512Asm(&x[lo], &y[lo], &b[lo], m, k512)
+
+				lo += m
+			}
+		}
 
 		if k != nil {
 			if m := (hi - lo) &^ 7; m > 0 {

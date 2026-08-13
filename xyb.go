@@ -43,34 +43,52 @@ var (
 	}
 )
 
+func (p *xybParams) srgbValues() [29]float32 {
+	var v [29]float32
+
+	for i := range 3 {
+		v[i] = p.biasCbrt[i]
+		v[4+i] = p.scaledBias[i]
+	}
+
+	v[3] = p.intensityScale
+
+	for i := range 9 {
+		v[7+i] = p.mat[i]
+	}
+
+	for i := range 5 {
+		v[16+i] = srgbP[i]
+		v[21+i] = srgbQ[i]
+	}
+
+	v[26] = 12.92
+	v[27] = 0.0031308
+	v[28] = math.Float32frombits(0x7fffffff)
+
+	return v
+}
+
 func (p *xybParams) srgbConsts() *[29][8]float32 {
 	k := new([29][8]float32)
 
-	set := func(i int, v float32) {
+	for i, v := range p.srgbValues() {
 		for j := range k[i] {
 			k[i][j] = v
 		}
 	}
 
-	for i := range 3 {
-		set(i, p.biasCbrt[i])
-		set(4+i, p.scaledBias[i])
+	return k
+}
+
+func (p *xybParams) srgbConsts512() *[29][16]float32 {
+	k := new([29][16]float32)
+
+	for i, v := range p.srgbValues() {
+		for j := range k[i] {
+			k[i][j] = v
+		}
 	}
-
-	set(3, p.intensityScale)
-
-	for i := range 9 {
-		set(7+i, p.mat[i])
-	}
-
-	for i := range 5 {
-		set(16+i, srgbP[i])
-		set(21+i, srgbQ[i])
-	}
-
-	set(26, 12.92)
-	set(27, 0.0031308)
-	set(28, math.Float32frombits(0x7fffffff))
 
 	return k
 }

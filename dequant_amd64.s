@@ -86,3 +86,86 @@ loop:
 
 done:
 	RET
+
+#define BIAS512(C, B)                  \
+	VMOVDQU32 (C), Z0              \
+	VCVTDQ2PS Z0, Z1               \
+	VDIVPS    Z1, Z8, Z2           \
+	VSUBPS    Z2, Z1, Z2           \
+	VPTESTNMD Z0, Z0, K1           \
+	VPABSD    Z0, Z4               \
+	VPCMPEQD  Z14, Z4, K2          \
+	VMULPS    B, Z1, K2, Z2        \
+	VMOVAPS   Z15, K1, Z2
+
+#define SIDE512(C, B, M, S, CC, O) \
+	BIAS512(C, B)              \
+	VMULPS  (M), Z2, Z7        \
+	VMULPS  S, Z7, Z7          \
+	VMULPS  CC, Z6, Z2         \
+	VADDPS  Z7, Z2, Z2         \
+	VMOVUPS Z2, (O)
+
+// func dequant512(a *dequantArgs)
+//
+// dequantAVX2 over sixteen coefficients at a time. The four-way select of
+// adjustQuantBias becomes two mask registers, so the AND, ANDN and OR of the
+// AVX2 version turn into a merge-masked multiply and a merge-masked move.
+TEXT ·dequant512(SB), NOSPLIT, $0-8
+	MOVQ a+0(FP), AX
+
+	MOVQ (AX), R8
+	MOVQ 8(AX), R9
+	MOVQ 16(AX), R10
+	MOVQ 24(AX), R11
+	MOVQ 32(AX), R12
+	MOVQ 40(AX), R13
+	MOVQ 48(AX), DI
+	MOVQ 56(AX), SI
+	MOVQ 64(AX), BX
+	MOVQ 72(AX), CX
+
+	SHRQ $4, CX
+	JZ   done512
+
+	VBROADCASTSS 92(AX), Z8
+	VBROADCASTSS 96(AX), Z9
+	VBROADCASTSS 100(AX), Z10
+	VBROADCASTSS 104(AX), Z11
+	VBROADCASTSS 108(AX), Z12
+	VBROADCASTSS 112(AX), Z13
+	VBROADCASTSS 80(AX), Z16
+	VBROADCASTSS 84(AX), Z17
+	VBROADCASTSS 88(AX), Z18
+
+	MOVL         $1, DX
+	MOVQ         DX, X14
+	VPBROADCASTD X14, Z14
+
+	VPXORD Z15, Z15, Z15
+
+loop512:
+	BIAS512(R12, Z17)
+	VMULPS  (SI), Z2, Z6
+	VMULPS  Z10, Z6, Z6
+	VMOVUPS Z6, (R9)
+
+	SIDE512(R11, Z16, DI, Z9, Z12, R8)
+	SIDE512(R13, Z18, BX, Z11, Z13, R10)
+
+	ADDQ $64, R8
+	ADDQ $64, R9
+	ADDQ $64, R10
+	ADDQ $64, R11
+	ADDQ $64, R12
+	ADDQ $64, R13
+	ADDQ $64, DI
+	ADDQ $64, SI
+	ADDQ $64, BX
+	SUBQ $1, CX
+	JNZ  loop512
+
+	VZEROUPPER
+
+done512:
+	RET

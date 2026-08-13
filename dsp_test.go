@@ -165,6 +165,7 @@ func TestXYBAsmMatchesGo(t *testing.T) {
 	o := defaultOpsinInverseMatrix()
 	p := newXYBParams(&o, 255)
 	k := p.srgbConsts()
+	k512 := p.srgbConsts512()
 
 	for _, n := range []int{8, 16, 24, 1024} {
 		x := make([]float32, n)
@@ -190,12 +191,30 @@ func TestXYBAsmMatchesGo(t *testing.T) {
 			wx[i], wy[i], wb[i] = linearToSRGB(cr), linearToSRGB(cg), linearToSRGB(cb)
 		}
 
-		xybSRGBAsm(&x[0], &y[0], &b[0], n, k)
+		for _, wide := range []bool{false, true} {
+			if wide && (xybSRGB512Asm == nil || n&15 != 0) {
+				continue
+			}
 
-		for i := range wx {
-			if x[i] != wx[i] || y[i] != wy[i] || b[i] != wb[i] {
-				t.Fatalf("n=%d sample %d: got %v %v %v, want %v %v %v",
-					n, i, x[i], y[i], b[i], wx[i], wy[i], wb[i])
+			gx := make([]float32, n)
+			gy := make([]float32, n)
+			gb := make([]float32, n)
+
+			copy(gx, x)
+			copy(gy, y)
+			copy(gb, b)
+
+			if wide {
+				xybSRGB512Asm(&gx[0], &gy[0], &gb[0], n, k512)
+			} else {
+				xybSRGBAsm(&gx[0], &gy[0], &gb[0], n, k)
+			}
+
+			for i := range wx {
+				if gx[i] != wx[i] || gy[i] != wy[i] || gb[i] != wb[i] {
+					t.Fatalf("wide %v n=%d sample %d: got %v %v %v, want %v %v %v",
+						wide, n, i, gx[i], gy[i], gb[i], wx[i], wy[i], wb[i])
+				}
 			}
 		}
 	}
@@ -296,43 +315,54 @@ func TestDequantAsmMatchesGo(t *testing.T) {
 		s.block[c] = make([]float32, maxCoeffArea)
 	}
 
-	for _, tr := range []hfTransform{hfDCT, hfDCT16X16, hfDCT32X32, hfDCT8X16} {
-		cx, cy := tr.blocks()
-		n := cx * cy * blockSize
+	wide := useDequant512
+	defer func() { useDequant512 = wide }()
 
-		for c := range 3 {
-			for i := range s.coeffs[c][:n] {
-				switch r.IntN(5) {
-				case 0:
-					s.coeffs[c][i] = 0
-				case 1:
-					s.coeffs[c][i] = 1
-				case 2:
-					s.coeffs[c][i] = -1
-				default:
-					s.coeffs[c][i] = int32(r.IntN(2001) - 1000)
+	for _, w := range []bool{false, true} {
+		if w && !wide {
+			continue
+		}
+
+		useDequant512 = w
+
+		for _, tr := range []hfTransform{hfDCT, hfDCT16X16, hfDCT32X32, hfDCT8X16} {
+			cx, cy := tr.blocks()
+			n := cx * cy * blockSize
+
+			for c := range 3 {
+				for i := range s.coeffs[c][:n] {
+					switch r.IntN(5) {
+					case 0:
+						s.coeffs[c][i] = 0
+					case 1:
+						s.coeffs[c][i] = 1
+					case 2:
+						s.coeffs[c][i] = -1
+					default:
+						s.coeffs[c][i] = int32(r.IntN(2001) - 1000)
+					}
 				}
 			}
-		}
 
-		var want [3][]float32
+			var want [3][]float32
 
-		useDequant = false
-		v.dequantBlock(&s, tr, 0.7, 13, 0.31, 1.2, n, 0)
-		useDequant = true
+			useDequant = false
+			v.dequantBlock(&s, tr, 0.7, 13, 0.31, 1.2, n, 0)
+			useDequant = true
 
-		for c := range 3 {
-			want[c] = make([]float32, n)
-			copy(want[c], s.block[c][:n])
-		}
+			for c := range 3 {
+				want[c] = make([]float32, n)
+				copy(want[c], s.block[c][:n])
+			}
 
-		v.dequantBlock(&s, tr, 0.7, 13, 0.31, 1.2, n, 0)
+			v.dequantBlock(&s, tr, 0.7, 13, 0.31, 1.2, n, 0)
 
-		for c := range 3 {
-			for i, x := range want[c] {
-				if s.block[c][i] != x {
-					t.Fatalf("transform %d channel %d coefficient %d (q=%d): got %v, want %v",
-						tr, c, i, s.coeffs[c][i], s.block[c][i], x)
+			for c := range 3 {
+				for i, x := range want[c] {
+					if s.block[c][i] != x {
+						t.Fatalf("transform %d channel %d coefficient %d (q=%d): got %v, want %v",
+							tr, c, i, s.coeffs[c][i], s.block[c][i], x)
+					}
 				}
 			}
 		}
