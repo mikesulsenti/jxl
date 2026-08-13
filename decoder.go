@@ -538,15 +538,31 @@ func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) {
 	n := w * h
 	x, y, b := planes[0][:n], planes[1][:n], planes[2][:n]
 
+	srgb := !c.wantICC && !c.tf.haveGamma && c.tf.tf == tfSRGB
+
+	var k *[29][8]float32
+
+	if srgb && xybSRGBAsm != nil {
+		k = p.srgbConsts()
+	}
+
 	overRows(d.threads, h, func(y0, y1 int) {
 		lo, hi := y0*w, y1*w
+
+		if k != nil {
+			if m := (hi - lo) &^ 7; m > 0 {
+				xybSRGBAsm(&x[lo], &y[lo], &b[lo], m, k)
+
+				lo += m
+			}
+		}
 
 		switch {
 		case c.wantICC:
 			for i := lo; i < hi; i++ {
 				x[i], y[i], b[i] = p.apply(x[i], y[i], b[i])
 			}
-		case !c.tf.haveGamma && c.tf.tf == tfSRGB:
+		case srgb:
 			for i := lo; i < hi; i++ {
 				r, g, bb := p.apply(x[i], y[i], b[i])
 

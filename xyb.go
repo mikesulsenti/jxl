@@ -43,6 +43,38 @@ var (
 	}
 )
 
+func (p *xybParams) srgbConsts() *[29][8]float32 {
+	k := new([29][8]float32)
+
+	set := func(i int, v float32) {
+		for j := range k[i] {
+			k[i][j] = v
+		}
+	}
+
+	for i := range 3 {
+		set(i, p.biasCbrt[i])
+		set(4+i, p.scaledBias[i])
+	}
+
+	set(3, p.intensityScale)
+
+	for i := range 9 {
+		set(7+i, p.mat[i])
+	}
+
+	for i := range 5 {
+		set(16+i, srgbP[i])
+		set(21+i, srgbQ[i])
+	}
+
+	set(26, 12.92)
+	set(27, 0.0031308)
+	set(28, math.Float32frombits(0x7fffffff))
+
+	return k
+}
+
 func evalRationalPoly(x float32, p, q *[5]float32) float32 {
 	yp := p[4]
 	yq := q[4]
