@@ -44,9 +44,8 @@ type rect struct {
 	x0, y0, w, h int
 }
 
-func (d *decoder) decodeFrame() (*frame, error) {
+func (d *decoder) readFrameHeader(r *bitReader) (*frame, error) {
 	f := &frame{threads: d.threads}
-	r := d.br
 
 	f.hdr.read(r, &d.hdr.meta, d.hdr.size.xsize, d.hdr.size.ysize)
 
@@ -66,28 +65,32 @@ func (d *decoder) decodeFrame() (*frame, error) {
 		}
 	}
 
+	return f, nil
+}
+
+func (d *decoder) decodeFrame(f *frame, r *bitReader) error {
 	sections, err := f.split(r)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := d.decodeLFGlobal(f, sections[0]); err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := f.decodeGroups(sections); err != nil {
-		return nil, err
+		return err
 	}
 
 	if len(f.modular.channels) > 0 {
 		f.modular.inverse(sections[0], f.gh.transforms, &f.gh.wp)
 
 		if err := sections[0].err(); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	return f, nil
+	return nil
 }
 
 func (f *frame) split(r *bitReader) ([]*bitReader, error) {

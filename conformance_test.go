@@ -2,6 +2,7 @@ package jxl
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -324,7 +325,7 @@ func TestConformanceICC(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			d, err := newDecoder(data, Options{Level: 10})
+			d, err := newDecoder(bytes.NewReader(data), Options{Level: 10})
 			if err != nil {
 				t.Fatal(err)
 			}

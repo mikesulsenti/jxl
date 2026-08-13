@@ -23,9 +23,6 @@ func parseContainer(data []byte) (*container, error) {
 	return readContainer(data, false)
 }
 
-// readContainer parses the boxes. With partial set, a final box that runs past
-// the buffer is clamped to what is there and the walk stops, which is what
-// DecodeConfig needs to reach the image header without the whole file.
 func readContainer(data []byte, partial bool) (*container, error) {
 	c := &container{level: 5}
 

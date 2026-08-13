@@ -3,6 +3,7 @@ package jxl
 import (
 	"image"
 	"image/color"
+	"io"
 	"math"
 )
 
@@ -16,10 +17,11 @@ type decoder struct {
 	opts     Options
 	threads  int
 	file     *container
-	br       *bitReader
 	hdr      fileHeader
 	iccp     []byte
 	arena    arena
+	src      *source
+	used     int
 	refs     [4]*canvas
 	preCT    [4]*refFrame
 	lfFrames [4]*refFrame
@@ -28,33 +30,89 @@ type decoder struct {
 	nonvisible int
 }
 
-func newDecoder(data []byte, o Options) (*decoder, error) {
-	d, err := readHeader(data, o, false)
+func newDecoder(r io.Reader, o Options) (*decoder, error) {
+	return newSourceDecoder(newSource(r, nil), o)
+}
+
+func newBytesDecoder(data []byte, o Options) (*decoder, error) {
+	return newSourceDecoder(newSource(nil, data), o)
+}
+
+func newSourceDecoder(s *source, o Options) (*decoder, error) {
+	s.need(len(sigContainer))
+
+	if s.fail != nil {
+		return nil, s.fail
+	}
+
+	boxed, skip, err := signature(s.window())
 	if err != nil {
 		return nil, err
 	}
 
-	if d.hdr.meta.color.wantICC {
-		encoded := readICCStream(d.br)
+	d := &decoder{opts: o, threads: numThreads(o.Threads)}
 
-		if err := d.br.err(); err != nil {
+	if boxed {
+		data, err := s.all()
+		if err != nil {
 			return nil, err
 		}
 
-		profile, ok := decodeICC(encoded)
-		if !ok {
-			return nil, ErrInvalid
+		if d.file, err = parseContainer(data[skip:]); err != nil {
+			return nil, err
 		}
 
-		d.iccp = profile
+		s = newSource(nil, d.file.codestream)
+	} else {
+		d.file = &container{level: 5}
 	}
 
-	return d, nil
+	if d.file.level > d.opts.Level {
+		return nil, ErrUnsupported
+	}
+
+	for {
+		br := newBitReader(s.window())
+
+		var hdr fileHeader
+
+		hdr.read(br)
+
+		err := br.err()
+		if err == nil {
+			d.hdr = hdr
+
+			if hdr.meta.color.wantICC {
+				encoded := readICCStream(br)
+
+				if err = br.err(); err == nil {
+					profile, ok := decodeICC(encoded)
+					if !ok {
+						return nil, ErrInvalid
+					}
+
+					d.iccp = profile
+				}
+			}
+		}
+
+		if err == nil {
+			d.src = s
+			d.used = br.pos()
+
+			return d, nil
+		}
+
+		if !s.more() {
+			if s.fail != nil {
+				return nil, s.fail
+			}
+
+			return nil, err
+		}
+	}
 }
 
-// readHeader stops after the image header, which is all DecodeConfig needs and
-// is a bounded distance into the file. With partial set the container may be
-// truncated after that header.
 func readHeader(data []byte, o Options, partial bool) (*decoder, error) {
 	boxed, skip, err := signature(data)
 	if err != nil {
@@ -75,18 +133,18 @@ func readHeader(data []byte, o Options, partial bool) (*decoder, error) {
 		return nil, ErrUnsupported
 	}
 
-	d.br = newBitReader(d.file.codestream)
-	d.hdr.read(d.br)
+	br := newBitReader(d.file.codestream)
+	d.hdr.read(br)
 
-	if err := d.br.err(); err != nil {
+	if err := br.err(); err != nil {
 		return nil, err
 	}
 
 	return d, nil
 }
 
-func decodeAll(data []byte, o Options) (*JXL, error) {
-	d, err := newDecoder(data, o)
+func decodeAll(r io.Reader, o Options) (*JXL, error) {
+	d, err := newDecoder(r, o)
 	if err != nil {
 		return nil, err
 	}
@@ -127,12 +185,25 @@ func (d *decoder) colorInfo() ColorInfo {
 	return info
 }
 
-func decodeFloat(data []byte, o Options) (*Float, error) {
-	d, err := newDecoder(data, o)
+func decodeFloat(r io.Reader, o Options) (*Float, error) {
+	d, err := newDecoder(r, o)
 	if err != nil {
 		return nil, err
 	}
 
+	return d.floats()
+}
+
+func decodeFloatBytes(data []byte, o Options) (*Float, error) {
+	d, err := newBytesDecoder(data, o)
+	if err != nil {
+		return nil, err
+	}
+
+	return d.floats()
+}
+
+func (d *decoder) floats() (*Float, error) {
 	fl, _, _, err := d.decodeFrames()
 	if err != nil {
 		return nil, err
@@ -167,7 +238,7 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 	}
 
 	for {
-		f, err := d.decodeFrame()
+		f, err := d.nextFrame()
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -185,10 +256,6 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 		}
 
 		if f.hdr.ftype == ftLF {
-			if d.br.err() != nil {
-				return nil, nil, 0, d.br.err()
-			}
-
 			continue
 		}
 
@@ -277,9 +344,6 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 		if f.hdr.isLast {
 			break
 		}
-		if d.br.err() != nil {
-			return nil, nil, 0, d.br.err()
-		}
 	}
 
 	if len(out.Frames) == 0 {
@@ -287,6 +351,45 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 	}
 
 	return out, delays, loops, nil
+}
+
+func (d *decoder) nextFrame() (*frame, error) {
+	var (
+		f   *frame
+		r   *bitReader
+		err error
+	)
+
+	for {
+		r = newBitReader(d.src.window())
+		r.skip(d.used)
+
+		if f, err = d.readFrameHeader(r); err == nil {
+			if end := r.pos()/8 + int(f.toc.offsets[len(f.toc.offsets)-1]); d.src.avail() >= end {
+				break
+			}
+
+			err = ErrInvalid
+		}
+
+		if !d.src.more() {
+			if d.src.fail != nil {
+				return nil, d.src.fail
+			}
+
+			return nil, err
+		}
+	}
+
+	if err := d.decodeFrame(f, r); err != nil {
+		return nil, err
+	}
+
+	d.used = r.pos()
+	d.src.advance(d.used / 8)
+	d.used %= 8
+
+	return f, nil
 }
 
 func (d *decoder) colorPlanes(f *frame) int {

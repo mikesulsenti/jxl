@@ -25,7 +25,7 @@ func benchStream(b *testing.B, name string) {
 			b.ReportAllocs()
 
 			for b.Loop() {
-				f, err := decodeFloat(data, Options{Level: 10, Threads: tc.threads})
+				f, err := decodeFloatBytes(data, Options{Level: 10, Threads: tc.threads})
 				if err != nil {
 					b.Fatal(err)
 				}

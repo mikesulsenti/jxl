@@ -1,6 +1,7 @@
 package jxl
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -114,7 +115,7 @@ func TestHeaderCorpus(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			d, err := newDecoder(data, Options{Level: 10})
+			d, err := newDecoder(bytes.NewReader(data), Options{Level: 10})
 			if err != nil {
 				t.Fatal(err)
 			}

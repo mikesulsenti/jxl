@@ -86,31 +86,18 @@ func DecodeColor(r io.Reader, opts ...Options) (image.Image, ColorInfo, error) {
 
 // DecodeAll reads every frame of a JPEG XL file. A still image gives one frame.
 func DecodeAll(r io.Reader, opts ...Options) (*JXL, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-
-	return decodeAll(data, options(opts))
+	return decodeAll(r, options(opts))
 }
 
 // DecodeFloat reads a JPEG XL file into the decoder's native float samples,
 // without converting to an image.Image.
 func DecodeFloat(r io.Reader, opts ...Options) (*Float, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-
-	return decodeFloat(data, options(opts))
+	return decodeFloat(r, options(opts))
 }
 
-// configChunk is the first read of DecodeConfig, and grows fourfold per retry.
 const configChunk = 1 << 12
 
 // DecodeConfig reads the dimensions and color model without decoding pixels.
-// It reads only as far as the image header, retrying on a larger prefix until
-// the header parses or the reader is exhausted.
 func DecodeConfig(r io.Reader) (image.Config, error) {
 	var buf []byte
 
