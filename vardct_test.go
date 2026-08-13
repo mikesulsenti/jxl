@@ -877,6 +877,7 @@ func TestVarDCTBodyRoundTrip(t *testing.T) {
 		v := f.vardct
 
 		f.lfQuant.factors = lfQuantDefault
+		v.cmap = colorCorrelation{factor: 137, baseX: 0.25, baseB: 0.75, ytoxLF: 9, ytobLF: -6}
 
 		for i := range v.transform {
 			v.transform[i] = 128 | uint8(hfDCT)
@@ -939,6 +940,7 @@ func TestVarDCTBodyRoundTrip(t *testing.T) {
 
 		hdr := groupHeader{wp: defaultWeightedHeader()}
 
+		f.encodeLFGlobal(&w)
 		f.encodeVarDCTLF(&w, 0, &hdr, trivialTree())
 		f.encodeHFMetadata(&w, 0, &hdr, trivialTree())
 		codes := f.encodeHFGlobal(&w, hist, counts)
@@ -963,6 +965,15 @@ func TestVarDCTBodyRoundTrip(t *testing.T) {
 		g.lfQuant.factors = lfQuantDefault
 
 		r := newBitReader(append(w.bytes(), make([]byte, 64)...))
+
+		g.lfQuant.read(r)
+		g.vardct.quant.read(r)
+		g.vardct.bctx.read(r)
+		g.vardct.cmap.read(r)
+
+		if r.bit() {
+			t.Fatalf("%v: a global tree was announced", dims)
+		}
 
 		g.decodeVarDCTLF(r, 0, nil)
 		g.decodeHFMetadata(r, 0, nil)
