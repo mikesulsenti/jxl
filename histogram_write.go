@@ -1,5 +1,10 @@
 package jxl
 
+import (
+	"cmp"
+	"slices"
+)
+
 func (l *lz77Params) write(w *bitWriter) {
 	w.bit(l.enabled)
 
@@ -185,6 +190,41 @@ func (h *histograms) write(w *bitWriter, counts [][]uint32) [][]prefixCode {
 	}
 
 	return h.huff.write(w, counts)
+}
+
+func clusterContexts(values [][]uint32, limit int) ([]uint8, [][]uint32) {
+	type ranked struct {
+		index, count int
+	}
+
+	var used []ranked
+
+	for i, v := range values {
+		if len(v) > 0 {
+			used = append(used, ranked{i, len(v)})
+		}
+	}
+
+	slices.SortFunc(used, func(a, b ranked) int {
+		return cmp.Or(cmp.Compare(b.count, a.count), cmp.Compare(a.index, b.index))
+	})
+
+	m := make([]uint8, len(values))
+
+	clusters := min(len(used), limit)
+	if clusters == 0 {
+		return m, [][]uint32{nil}
+	}
+
+	merged := make([][]uint32, clusters)
+
+	for rank, c := range used {
+		k := min(rank, clusters-1)
+		m[c.index] = uint8(k)
+		merged[k] = append(merged[k], values[c.index]...)
+	}
+
+	return m, merged
 }
 
 func buildHistograms(contextMap []uint8, values [][]uint32) (*histograms, [][]uint32) {
