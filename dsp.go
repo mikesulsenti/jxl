@@ -1,5 +1,8 @@
 package jxl
 
+var epf0Asm func(dst, src *[3]*float32, stride int, sigma *float32, sigmaStride int,
+	k *[6][8]float32, y, x0, x1 int)
+
 var epf1Asm func(dst, src *[3]*float32, stride int, sigma *float32, sigmaStride int,
 	mul, scales *float32, y, x0, x1 int)
 

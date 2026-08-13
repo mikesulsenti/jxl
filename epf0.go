@@ -6,17 +6,28 @@ func (e *epfPlanes) pass0(sigmaScale, borderSadMul float32) {
 
 	out := e.out
 
+	ax0, ax1 := 0, 0
+
+	var dst, src [3]*float32
+
+	var k [6][8]float32
+
+	if epf0Asm != nil {
+		if ax0, ax1 = e.asmSpan(3); ax0 < ax1 {
+			e.ptrs(&dst, &src)
+			e.consts(&k)
+		}
+	}
+
 	overRows(e.threads, e.h, func(y0, y1 int) {
 		var sads [12]float32
 
 		var rows, xs [7]int
 
-		for y := y0; y < y1; y++ {
-			for i := range rows {
-				rows[i] = e.yoff[y+i]
-			}
+		kb := k
 
-			for x := range e.w {
+		band := func(y, xa, xb int) {
+			for x := xa; x < xb; x++ {
 				for i := range xs {
 					xs[i] = e.xoff[x+i]
 				}
@@ -119,9 +130,28 @@ func (e *epfPlanes) pass0(sigmaScale, borderSadMul float32) {
 				}
 			}
 		}
+
+		for y := y0; y < y1; y++ {
+			for i := range rows {
+				rows[i] = e.yoff[y+i]
+			}
+
+			if ax0 >= ax1 || y < 3 || y > e.h-4 {
+				band(y, 0, e.w)
+
+				continue
+			}
+
+			for i := range kb[5] {
+				kb[5][i] = epfSadMul(i, y, sm, bsm)
+			}
+
+			epf0Asm(&dst, &src, e.w, &e.sigma[0], e.sw, &kb, y, ax0, ax1)
+
+			band(y, 0, ax0)
+			band(y, ax1, e.w)
+		}
 	})
 
-	for c := range e.planes {
-		copy(e.planes[c], out[c])
-	}
+	e.planes, e.out = e.out, e.planes
 }
