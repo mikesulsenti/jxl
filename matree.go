@@ -47,9 +47,8 @@ func (t *maTree) read(r *bitReader, sizeLimit int) {
 	sr.init(&th, r, 0)
 
 	var (
-		toDecode    = 1
-		leafID      uint32
-		maxProperty uint32
+		toDecode = 1
+		leafID   uint32
 	)
 
 	for toDecode > 0 {
@@ -74,8 +73,6 @@ func (t *maTree) read(r *bitReader, sizeLimit int) {
 
 				return
 			}
-
-			maxProperty = max(maxProperty, property)
 
 			splitVal := sr.readSigned(&th, r, ctxSplitVal)
 			left := uint32(len(t.nodes) + toDecode + 1)
@@ -127,17 +124,7 @@ func (t *maTree) read(r *bitReader, sizeLimit int) {
 		return
 	}
 
-	t.numProperties = int(maxProperty) + 1
-
-	for i := range t.nodes {
-		n := &t.nodes[i]
-
-		if n.isLeaf() {
-			t.usesWP = t.usesWP || n.predictor() == predWeighted
-		} else {
-			t.usesWP = t.usesWP || n.property == wpProperty
-		}
-	}
+	t.finish()
 
 	if !t.validate(r) {
 		return
