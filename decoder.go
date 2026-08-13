@@ -286,7 +286,9 @@ func (d *decoder) renderFrame(f *frame, channels int) ([][]float32, error) {
 		scratch := make([]float32, cw*ch)
 
 		for c := range min(color, 3) {
-			gaborish(planes[c], scratch, cw, ch, d.threads, weights[c][0], weights[c][1])
+			out := gaborish(planes[c], scratch, cw, ch, d.threads, weights[c][0], weights[c][1])
+
+			scratch, planes[c] = planes[c], out
 		}
 	}
 

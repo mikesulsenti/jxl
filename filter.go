@@ -13,9 +13,34 @@ func mirror1(i, n int) int {
 	return i
 }
 
-func gaborish(plane, scratch []float32, w, h, threads int, weight1, weight2 float32) {
+func gaborishRow(orow, trow, mrow, brow []float32, w, xa, xb int, w0, w1, w2 float32) {
+	for x := xa; x < xb; x++ {
+		l := mirror1(x-1, w)
+		r := mirror1(x+1, w)
+
+		orow[x] = mrow[x]*w0 +
+			(trow[x]+mrow[l]+brow[x]+mrow[r])*w1 +
+			(trow[l]+trow[r]+brow[l]+brow[r])*w2
+	}
+}
+
+func gaborish(plane, scratch []float32, w, h, threads int, weight1, weight2 float32) []float32 {
 	total := 1 + weight1*4 + weight2*4
 	w0, w1, w2 := 1/total, weight1/total, weight2/total
+
+	x0, x1 := 0, 0
+
+	var k [3][8]float32
+
+	if gaborishAsm != nil && w >= 24 {
+		if e := (w - 1) &^ 7; e > 8 {
+			x0, x1 = 8, e
+
+			for i := range 8 {
+				k[0][i], k[1][i], k[2][i] = w0, w1, w2
+			}
+		}
+	}
 
 	overRows(threads, h, func(y0, y1 int) {
 		for y := y0; y < y1; y++ {
@@ -28,18 +53,19 @@ func gaborish(plane, scratch []float32, w, h, threads int, weight1, weight2 floa
 			brow := plane[bot : bot+w]
 			orow := scratch[mid : mid+w]
 
-			for x := range w {
-				l := mirror1(x-1, w)
-				r := mirror1(x+1, w)
+			if x0 >= x1 {
+				gaborishRow(orow, trow, mrow, brow, w, 0, w, w0, w1, w2)
 
-				orow[x] = mrow[x]*w0 +
-					(trow[x]+mrow[l]+brow[x]+mrow[r])*w1 +
-					(trow[l]+trow[r]+brow[l]+brow[r])*w2
+				continue
 			}
+
+			gaborishAsm(&orow[x0], &trow[x0], &mrow[x0], &brow[x0], x1-x0, &k)
+			gaborishRow(orow, trow, mrow, brow, w, 0, x0, w0, w1, w2)
+			gaborishRow(orow, trow, mrow, brow, w, x1, w, w0, w1, w2)
 		}
 	})
 
-	copy(plane, scratch[:w*h])
+	return scratch
 }
 
 func mirror(v, s int) int {
