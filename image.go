@@ -2,7 +2,6 @@ package jxl
 
 import (
 	"image"
-	"math"
 )
 
 func clamp01(v float32) float32 {
@@ -19,8 +18,6 @@ func clamp01(v float32) float32 {
 func (d *decoder) renderSpot(f *Float, frame int) {
 	m := &d.hdr.meta
 	color := m.colorChannels()
-
-	d.renderSpot(f, frame)
 	src := f.Frames[frame]
 
 	for i, e := range m.extraChannels {
@@ -49,93 +46,120 @@ func (d *decoder) toImage(f *Float, frame int) (image.Image, error) {
 	alpha := m.alphaIndex()
 	color := m.colorChannels()
 
+	d.renderSpot(f, frame)
+
 	deep := m.depth.bitsPerSample > 8 || m.depth.floatSample
 
 	rect := image.Rect(0, 0, f.Width, f.Height)
 	src := f.Frames[frame]
 
-	at := func(x, y, c int) float32 {
-		return clamp01(src[(y*f.Width+x)*f.Channels+c])
+	ci := [3]int{0, 1, 2}
+	if gray {
+		ci = [3]int{}
 	}
 
-	alphaAt := func(x, y int) float32 {
-		if alpha < 0 {
-			return 1
-		}
-
-		return at(x, y, color+alpha)
+	ai := -1
+	if alpha >= 0 {
+		ai = color + alpha
 	}
+
+	n := f.Channels
 
 	switch {
 	case gray && alpha < 0 && !deep:
 		img := image.NewGray(rect)
 
-		for y := range f.Height {
-			for x := range f.Width {
-				img.Pix[y*img.Stride+x] = uint8(math.Round(float64(at(x, y, 0)) * 255))
+		overRows(d.threads, f.Height, func(y0, y1 int) {
+			for y := y0; y < y1; y++ {
+				row := src[y*f.Width*n:]
+				p := img.Pix[y*img.Stride:]
+
+				for x := range f.Width {
+					p[x] = to8(row[x*n])
+				}
 			}
-		}
+		})
 
 		return img, nil
 
 	case gray && alpha < 0:
 		img := image.NewGray16(rect)
 
-		for y := range f.Height {
-			for x := range f.Width {
-				v := uint16(math.Round(float64(at(x, y, 0)) * 65535))
-				img.Pix[y*img.Stride+x*2] = uint8(v >> 8)
-				img.Pix[y*img.Stride+x*2+1] = uint8(v)
+		overRows(d.threads, f.Height, func(y0, y1 int) {
+			for y := y0; y < y1; y++ {
+				row := src[y*f.Width*n:]
+				p := img.Pix[y*img.Stride:]
+
+				for x := range f.Width {
+					v := to16(row[x*n])
+					p[x*2] = uint8(v >> 8)
+					p[x*2+1] = uint8(v)
+				}
 			}
-		}
+		})
 
 		return img, nil
 
 	case !deep:
 		img := image.NewNRGBA(rect)
 
-		for y := range f.Height {
-			for x := range f.Width {
-				p := img.Pix[y*img.Stride+x*4:]
+		overRows(d.threads, f.Height, func(y0, y1 int) {
+			for y := y0; y < y1; y++ {
+				row := src[y*f.Width*n:]
+				p := img.Pix[y*img.Stride:]
 
-				for c := range 3 {
-					s := c
-					if gray {
-						s = 0
+				for x := range f.Width {
+					o, q := x*n, p[x*4:]
+
+					q[0] = to8(row[o+ci[0]])
+					q[1] = to8(row[o+ci[1]])
+					q[2] = to8(row[o+ci[2]])
+
+					q[3] = 255
+					if ai >= 0 {
+						q[3] = to8(row[o+ai])
 					}
-
-					p[c] = uint8(math.Round(float64(at(x, y, s)) * 255))
 				}
-
-				p[3] = uint8(math.Round(float64(alphaAt(x, y)) * 255))
 			}
-		}
+		})
 
 		return img, nil
 	}
 
 	img := image.NewNRGBA64(rect)
 
-	for y := range f.Height {
-		for x := range f.Width {
-			p := img.Pix[y*img.Stride+x*8:]
+	overRows(d.threads, f.Height, func(y0, y1 int) {
+		for y := y0; y < y1; y++ {
+			row := src[y*f.Width*n:]
+			p := img.Pix[y*img.Stride:]
 
-			for c := range 3 {
-				s := c
-				if gray {
-					s = 0
+			for x := range f.Width {
+				o, q := x*n, p[x*8:]
+
+				for c := range 3 {
+					v := to16(row[o+ci[c]])
+					q[c*2] = uint8(v >> 8)
+					q[c*2+1] = uint8(v)
 				}
 
-				v := uint16(math.Round(float64(at(x, y, s)) * 65535))
-				p[c*2] = uint8(v >> 8)
-				p[c*2+1] = uint8(v)
-			}
+				v := uint16(65535)
+				if ai >= 0 {
+					v = to16(row[o+ai])
+				}
 
-			v := uint16(math.Round(float64(alphaAt(x, y)) * 65535))
-			p[6] = uint8(v >> 8)
-			p[7] = uint8(v)
+				q[6] = uint8(v >> 8)
+				q[7] = uint8(v)
+			}
 		}
-	}
+	})
 
 	return img, nil
+}
+
+func to8(v float32) uint8 {
+	return uint8(float64(clamp01(v))*255 + 0.5)
+}
+
+func to16(v float32) uint16 {
+	return uint16(float64(clamp01(v))*65535 + 0.5)
 }

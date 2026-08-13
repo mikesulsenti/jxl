@@ -214,11 +214,19 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 
 			if m.orient == orIdentity {
 				overRows(d.threads, h, func(y0, y1 int) {
-					for c := range channels {
-						src := result.planes[c][y0*w : y1*w]
+					lo, hi := y0*w, y1*w
 
-						for i, v := range src {
-							interleaved[(y0*w+i)*channels+c] = v
+					if channels == 1 {
+						copy(interleaved[lo:hi], result.planes[0][lo:hi])
+
+						return
+					}
+
+					for i := lo; i < hi; i++ {
+						dst := interleaved[i*channels : (i+1)*channels]
+
+						for c, p := range result.planes {
+							dst[c] = p[i]
 						}
 					}
 				})
