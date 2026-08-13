@@ -302,6 +302,47 @@ func fdct2d(rows, cols int, data, scratch []float32) {
 	fdctColumns(cols, rows, block, rows, data, rows, tmp)
 }
 
+func unscaledColumns(n, m int, src []float32, srcStride int, dst []float32, dstStride int, tmp []float32) {
+	scale := dctResample[bits.TrailingZeros(uint(n))]
+
+	for j := range m {
+		for i := range n {
+			tmp[i] = src[i*srcStride+j] / scale[i]
+		}
+
+		idct1d(n, tmp, 1, tmp[n:], 1, tmp[2*n:])
+
+		for i := range n {
+			dst[i*dstStride+j] = tmp[n+i]
+		}
+	}
+}
+
+func unscaledDCT2D(rows, cols int, in []float32, inStride int, out []float32, scratch []float32) {
+	n := rows * cols
+	a, b := scratch[:n], scratch[n:2*n]
+	tmp := scratch[2*n:]
+
+	lo, hi := min(rows, cols), max(rows, cols)
+
+	src := a
+	if rows < cols {
+		src = b
+	}
+
+	for y := range lo {
+		copy(src[y*hi:(y+1)*hi], in[y*inStride:])
+	}
+
+	if rows < cols {
+		transposeBlock(rows, cols, b, cols, a, rows)
+	}
+
+	unscaledColumns(cols, rows, a, rows, b, rows, tmp)
+	transposeBlock(cols, rows, b, rows, a, cols)
+	unscaledColumns(rows, cols, a, cols, out, cols, tmp)
+}
+
 func scaledDCT2D(rows, cols int, in, out []float32, outStride int, scratch []float32) {
 	n := rows * cols
 	a, b := scratch[:n], scratch[n:2*n]

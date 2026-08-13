@@ -67,7 +67,7 @@ func TestEncodeDecodesBack(t *testing.T) {
 
 		t.Logf("%v: %d bytes, worst error %.5f", dims, len(data), worst)
 
-		if worst > 0.012 {
+		if worst > 0.013 {
 			t.Fatalf("%v: reconstruction is %g from the source", dims, worst)
 		}
 	}

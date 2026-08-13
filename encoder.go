@@ -56,8 +56,7 @@ func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int, quant in
 		}
 	}
 
-	for i := range v.transform {
-		v.transform[i] = 128 | uint8(hfDCT)
+	for i := range v.rawQuant {
 		v.rawQuant[i] = quant
 	}
 
@@ -84,36 +83,181 @@ func (f *frame) fillXYB(fwd *xybForward, rgb [3][]float32, w, h int) {
 	}
 }
 
-func (f *frame) transformBlocks(s *dctScratch) bool {
+func (f *frame) blockToScratch(s *dctScratch, t hfTransform, bx, by int, lf *[3][]float32) bool {
 	v := f.vardct
+	cx, cy := t.blocks()
 	stride := v.bw * blockDim
+	bw, bh := cx*blockDim, cy*blockDim
+
+	for c := range 3 {
+		buf := s.block[c][:cx*cy*blockSize]
+
+		for y := range bh {
+			copy(buf[y*bw:], v.pixels[c][(by*blockDim+y)*stride+bx*blockDim:][:bw])
+		}
+
+		if !transformFromPixels(t, buf, lf[c], s.scratch) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (f *frame) blockCost(s *dctScratch, t hfTransform, bx, by int, lf *[3][]float32) (int, float64) {
+	v := f.vardct
+	cx, cy := t.blocks()
+	numCoeffs := cx * cy * blockSize
+	bw, bh := cx*blockDim, cy*blockDim
+	stride := v.bw * blockDim
+
+	if !f.blockToScratch(s, t, bx, by, lf) {
+		return 1 << 30, 0
+	}
+
+	v.quantizeBlock(s, t, v.quant.invGlobalScale(), uint32(v.rawQuant[by*v.bw+bx]),
+		v.cmap.yToX(0), v.cmap.yToB(0), numCoeffs, 0)
+
+	order := naturalOrders[hfShapeID[t]]
+	rate := 0
+
+	for c := range 3 {
+		for k := cx * cy; k < numCoeffs; k++ {
+			if s.coeffs[c][order[k]] != 0 {
+				rate++
+			}
+		}
+
+		for k := range cx * cy {
+			s.coeffs[c][order[k]] = 0
+		}
+	}
+
+	v.dequantBlock(s, t, v.quant.invGlobalScale(), uint32(v.rawQuant[by*v.bw+bx]),
+		v.cmap.yToX(0), v.cmap.yToB(0), numCoeffs, 0)
+
+	sse := 0.0
+
+	for c := range 3 {
+		transformToPixels(t, lf[c], s.block[c][:numCoeffs], s.scratch)
+
+		for y := range bh {
+			row := v.pixels[c][(by*blockDim+y)*stride+bx*blockDim:][:bw]
+
+			for x, want := range row {
+				d := float64(s.block[c][y*bw+x] - want)
+				sse += d * d
+			}
+		}
+	}
+
+	return rate, sse
+}
+
+func (f *frame) chooseTransforms(s *dctScratch) {
+	v := f.vardct
+
+	for i := range v.transform {
+		v.transform[i] = invalidTransform
+	}
 
 	for by := range v.bh {
 		for bx := range v.bw {
-			b := by*v.bw + bx
-
-			for c := range 3 {
-				var buf, lf [blockSize]float32
-
-				for y := range blockDim {
-					copy(buf[y*blockDim:],
-						v.pixels[c][(by*blockDim+y)*stride+bx*blockDim:][:blockDim])
-				}
-
-				if !transformFromPixels(hfDCT, buf[:], lf[:], s.scratch) {
-					return false
-				}
-
-				copy(s.block[c], buf[:])
-				v.lf[c][b] = lf[0]
+			if v.transform[by*v.bw+bx] != invalidTransform {
+				continue
 			}
 
-			v.quantizeBlock(s, hfDCT, v.quant.invGlobalScale(), uint32(v.rawQuant[b]),
-				v.cmap.yToX(0), v.cmap.yToB(0), blockSize, b*blockSize)
+			t := hfDCT
+
+			if bx%2 == 0 && by%2 == 0 && bx+2 <= v.bw && by+2 <= v.bh {
+				var (
+					lf       [3][]float32
+					rate     int
+					distance float64
+				)
+
+				for c := range 3 {
+					lf[c] = make([]float32, maxCoeffBlocks*maxCoeffBlocks)
+				}
+
+				for oy := range 2 {
+					for ox := range 2 {
+						r, d := f.blockCost(s, hfDCT, bx+ox, by+oy, &lf)
+						rate += r
+						distance += d
+					}
+				}
+
+				bigRate, bigDistance := f.blockCost(s, hfDCT16X16, bx, by, &lf)
+
+				if bigRate < rate && bigDistance <= distance {
+					t = hfDCT16X16
+				}
+			}
+
+			cx, cy := t.blocks()
+
+			for iy := range cy {
+				for ix := range cx {
+					id := uint8(t)
+
+					if ix == 0 && iy == 0 {
+						id |= 128
+					}
+
+					v.transform[(by+iy)*v.bw+bx+ix] = id
+				}
+			}
+		}
+	}
+}
+
+func (f *frame) transformBlocks(s *dctScratch) bool {
+	v := f.vardct
+	offset := 0
+
+	for by := range v.bh {
+		for bx := range v.bw {
+			pos := by*v.bw + bx
+
+			if v.transform[pos] < 128 {
+				continue
+			}
+
+			t := hfTransform(v.transform[pos] & 127)
+			cx, cy := t.blocks()
+			numCoeffs := cx * cy * blockSize
+
+			var lf [3][]float32
 
 			for c := range 3 {
-				s.coeffs[c][b*blockSize] = 0
+				lf[c] = make([]float32, maxCoeffBlocks*maxCoeffBlocks)
 			}
+
+			if !f.blockToScratch(s, t, bx, by, &lf) {
+				return false
+			}
+
+			for c := range 3 {
+				for y := range cy {
+					for x := range cx {
+						v.lf[c][(by+y)*v.bw+bx+x] = lf[c][y*cx+x]
+					}
+				}
+			}
+
+			v.quantizeBlock(s, t, v.quant.invGlobalScale(), uint32(v.rawQuant[pos]),
+				v.cmap.yToX(0), v.cmap.yToB(0), numCoeffs, offset)
+
+			order := naturalOrders[hfShapeID[t]]
+
+			for c := range 3 {
+				for k := range cx * cy {
+					s.coeffs[c][offset+int(order[k])] = 0
+				}
+			}
+
+			offset += numCoeffs
 		}
 	}
 
@@ -190,6 +334,8 @@ func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32) ([]byte, error) 
 	var scratch dctScratch
 
 	scratch.alloc(f)
+
+	f.chooseTransforms(&scratch)
 
 	if !f.transformBlocks(&scratch) {
 		return nil, ErrUnsupported

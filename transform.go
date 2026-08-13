@@ -386,12 +386,21 @@ func transformToPixels(t hfTransform, lf, buf, scratch []float32) {
 }
 
 func transformFromPixels(t hfTransform, buf, lf, scratch []float32) bool {
-	if t != hfDCT {
+	cx, cy := t.blocks()
+
+	if t != hfDCT && cx*cy == 1 {
 		return false
 	}
 
-	fdct2d(blockDim, blockDim, buf, scratch)
-	lf[0] = buf[0]
+	fdct2d(cy*blockDim, cx*blockDim, buf, scratch)
+
+	if t == hfDCT {
+		lf[0] = buf[0]
+
+		return true
+	}
+
+	unscaledDCT2D(cy, cx, buf, blockDim*max(cx, cy), lf, scratch)
 
 	return true
 }

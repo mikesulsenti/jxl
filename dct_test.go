@@ -330,8 +330,93 @@ func TestTransformFromPixels(t *testing.T) {
 	for tr := hfTransform(0); tr < numHFTransforms; tr++ {
 		var buf, lf [maxCoeffArea]float32
 
-		if got := transformFromPixels(tr, buf[:], lf[:], scratch); got != (tr == hfDCT) {
-			t.Fatalf("transform %d: accepted is %v", tr, got)
+		cx, cy := tr.blocks()
+		want := tr == hfDCT || cx*cy > 1
+
+		if got := transformFromPixels(tr, buf[:], lf[:], scratch); got != want {
+			t.Fatalf("transform %d: accepted is %v, want %v", tr, got, want)
+		}
+	}
+}
+
+func TestTransformFromPixelsMultiBlock(t *testing.T) {
+	rng := rand.New(rand.NewPCG(37, 41))
+
+	scratch := make([]float32, 8*maxCoeffArea)
+
+	for tr := hfTransform(0); tr < numHFTransforms; tr++ {
+		cx, cy := tr.blocks()
+
+		if cx*cy == 1 {
+			continue
+		}
+
+		n := cx * cy * blockSize
+
+		pixels := make([]float32, n)
+		for i := range pixels {
+			pixels[i] = float32(rng.NormFloat64()) * 100
+		}
+
+		buf := make([]float32, n)
+		copy(buf, pixels)
+
+		lf := make([]float32, maxCoeffBlocks*maxCoeffBlocks)
+
+		if !transformFromPixels(tr, buf, lf, scratch) {
+			t.Fatalf("transform %d was refused", tr)
+		}
+
+		transformToPixels(tr, lf, buf, scratch)
+
+		var worst float64
+
+		for i := range pixels {
+			worst = math.Max(worst, math.Abs(float64(buf[i]-pixels[i])))
+		}
+
+		if worst > 5e-3 {
+			t.Fatalf("transform %d: round trip error %g", tr, worst)
+		}
+	}
+}
+
+func TestUnscaledDCT2DInvertsScaled(t *testing.T) {
+	rng := rand.New(rand.NewPCG(29, 31))
+
+	for _, rows := range []int{1, 2, 4, 8, 16, 32} {
+		for _, cols := range []int{1, 2, 4, 8, 16, 32} {
+			if max(rows, cols) > 8*min(rows, cols) {
+				continue
+			}
+
+			n := rows * cols
+
+			in := make([]float32, n)
+			for i := range in {
+				in[i] = float32(rng.NormFloat64())
+			}
+
+			stride := blockDim * max(rows, cols)
+
+			out := make([]float32, stride*max(rows, cols)+stride)
+			scratch := make([]float32, 4*n+16*max(rows, cols))
+
+			scaledDCT2D(rows, cols, in, out, stride, scratch)
+
+			back := make([]float32, n)
+
+			unscaledDCT2D(rows, cols, out, stride, back, scratch)
+
+			var worst float64
+
+			for i := range in {
+				worst = math.Max(worst, math.Abs(float64(back[i]-in[i])))
+			}
+
+			if worst > 1e-4 {
+				t.Fatalf("%dx%d: round trip error %g", rows, cols, worst)
+			}
 		}
 	}
 }
