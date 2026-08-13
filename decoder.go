@@ -1,0 +1,584 @@
+package jxl
+
+import (
+	"image"
+	"image/color"
+	"math"
+)
+
+type refFrame struct {
+	w, h     int
+	planes   [][]float32
+	beforeCT bool
+}
+
+type decoder struct {
+	opts     Options
+	threads  int
+	file     *container
+	br       *bitReader
+	hdr      fileHeader
+	iccp     []byte
+	refs     [4]*canvas
+	preCT    [4]*refFrame
+	lfFrames [4]*refFrame
+
+	visible    int
+	nonvisible int
+}
+
+func newDecoder(data []byte, o Options) (*decoder, error) {
+	boxed, skip, err := signature(data)
+	if err != nil {
+		return nil, err
+	}
+
+	d := &decoder{opts: o, threads: numThreads(o.Threads)}
+
+	if boxed {
+		if d.file, err = parseContainer(data[skip:]); err != nil {
+			return nil, err
+		}
+	} else {
+		d.file = &container{codestream: data, level: 5}
+	}
+
+	if d.file.level > d.opts.Level {
+		return nil, ErrUnsupported
+	}
+
+	d.br = newBitReader(d.file.codestream)
+	d.hdr.read(d.br)
+
+	if err := d.br.err(); err != nil {
+		return nil, err
+	}
+
+	if d.hdr.meta.color.wantICC {
+		encoded := readICCStream(d.br)
+
+		if err := d.br.err(); err != nil {
+			return nil, err
+		}
+
+		profile, ok := decodeICC(encoded)
+		if !ok {
+			return nil, ErrInvalid
+		}
+
+		d.iccp = profile
+	}
+
+	return d, nil
+}
+
+func decodeAll(data []byte, o Options) (*JXL, error) {
+	d, err := newDecoder(data, o)
+	if err != nil {
+		return nil, err
+	}
+
+	fl, delays, loops, err := d.decodeFrames()
+	if err != nil {
+		return nil, err
+	}
+
+	out := &JXL{Delay: delays, Loops: loops, Color: d.colorInfo()}
+
+	for i := range fl.Frames {
+		img, err := d.toImage(fl, i)
+		if err != nil {
+			return nil, err
+		}
+
+		out.Image = append(out.Image, img)
+	}
+
+	return out, nil
+}
+
+func (d *decoder) colorInfo() ColorInfo {
+	c := &d.hdr.meta.color
+
+	info := ColorInfo{
+		Primaries: uint16(c.prim),
+		Transfer:  uint16(c.tf.tf),
+		Matrix:    0,
+		ICCP:      d.iccp,
+	}
+
+	if c.space == csGray {
+		info.Matrix = 2
+	}
+
+	return info
+}
+
+func decodeFloat(data []byte, o Options) (*Float, error) {
+	d, err := newDecoder(data, o)
+	if err != nil {
+		return nil, err
+	}
+
+	fl, _, _, err := d.decodeFrames()
+	if err != nil {
+		return nil, err
+	}
+
+	fl.Color = d.colorInfo()
+
+	return fl, nil
+}
+
+func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
+	m := &d.hdr.meta
+	channels := m.colorChannels() + len(m.extraChannels)
+	w, h := int(d.hdr.size.xsize), int(d.hdr.size.ysize)
+
+	b := d.newBlender()
+
+	ow, oh := w, h
+	if m.orient.transposing() {
+		ow, oh = h, w
+	}
+
+	out := &Float{Width: ow, Height: oh, Channels: channels}
+
+	var (
+		delays []float64
+		loops  int
+	)
+
+	if m.haveAnimation {
+		loops = int(m.anim.numLoops)
+	}
+
+	for {
+		f, err := d.decodeFrame()
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		if f.hdr.isVisible() {
+			d.visible++
+			d.nonvisible = 0
+		} else {
+			d.nonvisible++
+		}
+
+		planes, err := d.renderFrame(f, channels)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		if f.hdr.ftype == ftLF {
+			if d.br.err() != nil {
+				return nil, nil, 0, d.br.err()
+			}
+
+			continue
+		}
+
+		fw, fh := f.hdr.sizeUpsampled()
+
+		colorSpec := specOf(f.hdr.blending)
+
+		ecSpecs := make([]blendSpec, len(f.hdr.ecBlending))
+		for i, e := range f.hdr.ecBlending {
+			ecSpecs[i] = specOf(e)
+		}
+
+		var result *canvas
+
+		if fw == w && fh == h && f.hdr.x0 == 0 && f.hdr.y0 == 0 &&
+			allReplace(colorSpec, ecSpecs) {
+			result = &canvas{w: w, h: h, channels: channels, planes: planes}
+		} else {
+			ref := d.refs[f.hdr.blending.source]
+			if ref == nil {
+				ref = newCanvas(w, h, channels)
+			}
+
+			result = newCanvas(w, h, channels)
+
+			b.blend(result, ref, planes, fw, fh,
+				int(f.hdr.x0), int(f.hdr.y0), colorSpec, ecSpecs)
+		}
+
+		if f.hdr.canBeReferenced {
+			d.refs[f.hdr.saveAsReference] = result
+		}
+
+		if f.hdr.isLast || f.hdr.duration > 0 {
+			interleaved := make([]float32, w*h*channels)
+
+			if m.orient == orIdentity {
+				overRows(d.threads, h, func(y0, y1 int) {
+					for c := range channels {
+						src := result.planes[c][y0*w : y1*w]
+
+						for i, v := range src {
+							interleaved[(y0*w+i)*channels+c] = v
+						}
+					}
+				})
+			} else {
+				overRows(d.threads, h, func(y0, y1 int) {
+					for y := y0; y < y1; y++ {
+						for x := range w {
+							ox, oy := m.orient.displayPixel(x, y, w, h)
+							dst := (oy*ow + ox) * channels
+
+							for c := range channels {
+								interleaved[dst+c] = result.planes[c][y*w+x]
+							}
+						}
+					}
+				})
+			}
+
+			out.Frames = append(out.Frames, interleaved)
+			delays = append(delays, f.hdr.delay(&m.anim))
+		}
+
+		if f.hdr.isLast {
+			break
+		}
+		if d.br.err() != nil {
+			return nil, nil, 0, d.br.err()
+		}
+	}
+
+	if len(out.Frames) == 0 {
+		return nil, nil, 0, ErrInvalid
+	}
+
+	return out, delays, loops, nil
+}
+
+func (d *decoder) colorPlanes(f *frame) int {
+	if d.hdr.meta.xybEncoded || f.vardct != nil {
+		return 3
+	}
+
+	return d.hdr.meta.colorChannels()
+}
+
+func (d *decoder) renderFrame(f *frame, channels int) ([][]float32, error) {
+	m := &d.hdr.meta
+	cw, ch := f.hdr.size()
+	w, h := f.hdr.sizeUpsampled()
+
+	planes, err := d.toPlanes(f, cw, ch)
+	if err != nil {
+		return nil, err
+	}
+
+	color := d.colorPlanes(f)
+
+	if g := &f.hdr.filter; g.gab {
+		weights := [3][2]float32{
+			{g.gabXWeight1, g.gabXWeight2},
+			{g.gabYWeight1, g.gabYWeight2},
+			{g.gabBWeight1, g.gabBWeight2},
+		}
+
+		scratch := make([]float32, cw*ch)
+
+		for c := range min(color, 3) {
+			gaborish(planes[c], scratch, cw, ch, d.threads, weights[c][0], weights[c][1])
+		}
+	}
+
+	if err := d.applyEPF(f, planes, cw, ch, color); err != nil {
+		return nil, err
+	}
+
+	d.applyPatches(f, planes, cw, ch)
+
+	if f.hdr.flags&flagSplines != 0 {
+		f.splines.draw(planes, cw, ch)
+	}
+
+	if f.hdr.upsampling > 1 {
+		planes = d.upsamplePlanes(f, planes, cw, ch, w, h)
+	}
+
+	if f.hdr.flags&flagNoise != 0 {
+		d.addNoise(f, planes, w, h)
+	}
+
+	if f.hdr.ftype == ftLF {
+		lf := &refFrame{w: w, h: h, planes: make([][]float32, 3)}
+
+		for i := range 3 {
+			lf.planes[i] = planes[i]
+		}
+
+		d.lfFrames[f.hdr.lfLevel-1] = lf
+
+		return nil, nil
+	}
+
+	if f.hdr.canBeReferenced && f.hdr.saveBeforeCT {
+		ref := &refFrame{w: w, h: h, beforeCT: true, planes: make([][]float32, len(planes))}
+
+		for i, p := range planes {
+			ref.planes[i] = make([]float32, len(p))
+			copy(ref.planes[i], p)
+		}
+
+		d.preCT[f.hdr.saveAsReference] = ref
+	}
+
+	switch {
+	case f.hdr.doYCbCr:
+		ycbcrToRGB(planes, w, h, d.threads)
+	case m.xybEncoded:
+		d.xybToRGB(f, planes, w, h)
+	}
+
+	if len(planes) != channels {
+		planes = append(planes[:m.colorChannels()], planes[color:]...)
+	}
+
+	return planes, nil
+}
+
+func (d *decoder) toPlanes(f *frame, w, h int) ([][]float32, error) {
+	m := &d.hdr.meta
+	color := d.colorPlanes(f)
+
+	planes := make([][]float32, color+len(m.extraChannels))
+	for i := range planes {
+		planes[i] = make([]float32, w*h)
+	}
+
+	switch {
+	case f.vardct != nil:
+		v := f.vardct
+
+		for c := range 3 {
+			src := v.pixels[c]
+			sw, sh := v.bw*blockDim>>v.hs[c], v.bh*blockDim>>v.vs[c]
+
+			for range v.hs[c] {
+				src = chromaUpsampleH(src, sw, sh)
+				sw *= 2
+			}
+
+			for range v.vs[c] {
+				src = chromaUpsampleV(src, sw, sh)
+				sh *= 2
+			}
+
+			for y := range h {
+				copy(planes[c][y*w:(y+1)*w], src[y*sw:])
+			}
+		}
+	case m.xybEncoded:
+		if len(f.modular.channels) < 3 {
+			return nil, ErrUnsupported
+		}
+
+		cy, cx, cb := f.modular.channels[0], f.modular.channels[1], f.modular.channels[2]
+		if cy.w < w || cy.h < h || !cx.equivalent(cy) || !cb.equivalent(cy) {
+			return nil, ErrUnsupported
+		}
+
+		s := f.lfQuant.factors
+
+		overRows(d.threads, h, func(y0, y1 int) {
+			for y := y0; y < y1; y++ {
+				ry, rx, rb := cy.row(y), cx.row(y), cb.row(y)
+
+				for x := range w {
+					i := y*w + x
+					planes[0][i] = float32(rx[x]) * s[0]
+					planes[1][i] = float32(ry[x]) * s[1]
+					planes[2][i] = (float32(rb[x]) + float32(ry[x])) * s[2]
+				}
+			}
+		})
+	}
+
+	mbase := color
+	if f.vardct != nil {
+		mbase = 0
+	}
+
+	for c := range planes {
+		var (
+			ch    *modChannel
+			depth bitDepth
+		)
+
+		if c < color {
+			if f.vardct != nil || m.xybEncoded {
+				continue
+			}
+
+			ch, depth = f.modular.channels[c], m.depth
+		} else {
+			ch, depth = f.modular.channels[mbase+c-color], m.extraChannels[c-color].depth
+		}
+
+		if ch.w < w || ch.h < h {
+			return nil, ErrUnsupported
+		}
+
+		if depth.floatSample {
+			if depth.bitsPerSample != 32 || m.xybEncoded {
+				return nil, ErrUnsupported
+			}
+
+			overRows(d.threads, h, func(y0, y1 int) {
+				for y := y0; y < y1; y++ {
+					row := ch.row(y)
+
+					for x := range w {
+						planes[c][y*w+x] = math.Float32frombits(uint32(row[x]))
+					}
+				}
+			})
+
+			continue
+		}
+
+		scale := float32(1) / float32(uint64(1)<<depth.bitsPerSample-1)
+
+		overRows(d.threads, h, func(y0, y1 int) {
+			for y := y0; y < y1; y++ {
+				row := ch.row(y)
+
+				for x := range w {
+					planes[c][y*w+x] = float32(row[x]) * scale
+				}
+			}
+		})
+	}
+
+	return planes, nil
+}
+
+func (d *decoder) applyEPF(f *frame, planes [][]float32, w, h, color int) error {
+	rf := &f.hdr.filter
+
+	if rf.epfIters == 0 {
+		return nil
+	}
+
+	e := epfPlanes{w: w, h: h, threads: d.threads}
+
+	switch {
+	case color >= 3:
+		e.planes = planes[:3]
+		e.scales = rf.epfChannelScale[:]
+	case color == 1:
+		e.planes = planes[:1]
+		e.scales = []float32{
+			rf.epfChannelScale[0] + rf.epfChannelScale[1] + rf.epfChannelScale[2],
+		}
+	default:
+		return ErrUnsupported
+	}
+
+	if f.vardct != nil {
+		e.sigma, e.sw = f.vardct.sigmaImage(rf)
+	} else {
+		e.sw = divCeil(w, blockDim)
+		e.sigma = make([]float32, e.sw*divCeil(h, blockDim))
+
+		for i := range e.sigma {
+			e.sigma[i] = epfInvSigmaNum / rf.epfSigmaForModular
+		}
+	}
+
+	e.init()
+
+	if rf.epfIters >= 3 {
+		e.pass0(rf.epfPass0SigmaScale, rf.epfBorderSadMul)
+	}
+
+	e.pass1(1, rf.epfBorderSadMul)
+
+	if rf.epfIters >= 2 {
+		e.pass2(rf.epfPass2SigmaScale, rf.epfBorderSadMul)
+	}
+
+	return nil
+}
+
+func ycbcrToRGB(planes [][]float32, w, h, threads int) {
+	const (
+		c128  = 128.0 / 255
+		crToR = 1.402
+		crToG = -0.299 * 1.402 / 0.587
+		cbToG = -0.114 * 1.772 / 0.587
+		cbToB = 1.772
+	)
+
+	overRows(threads, h, func(y0, y1 int) {
+		for i := y0 * w; i < y1*w; i++ {
+			cb, y, cr := planes[0][i], planes[1][i]+c128, planes[2][i]
+
+			planes[0][i] = cr*crToR + y
+			planes[1][i] = cr*crToG + (cb*cbToG + y)
+			planes[2][i] = cb*cbToB + y
+		}
+	})
+}
+
+func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) {
+	p := newXYBParams(&d.hdr.transform.opsin, d.hdr.meta.tone.intensityTarget)
+	c := &d.hdr.meta.color
+
+	n := w * h
+	x, y, b := planes[0][:n], planes[1][:n], planes[2][:n]
+
+	overRows(d.threads, h, func(y0, y1 int) {
+		lo, hi := y0*w, y1*w
+
+		switch {
+		case c.wantICC:
+			for i := lo; i < hi; i++ {
+				x[i], y[i], b[i] = p.apply(x[i], y[i], b[i])
+			}
+		case !c.tf.haveGamma && c.tf.tf == tfSRGB:
+			for i := lo; i < hi; i++ {
+				r, g, bb := p.apply(x[i], y[i], b[i])
+
+				x[i] = linearToSRGB(r)
+				y[i] = linearToSRGB(g)
+				b[i] = linearToSRGB(bb)
+			}
+		default:
+			for i := lo; i < hi; i++ {
+				r, g, bb := p.apply(x[i], y[i], b[i])
+
+				x[i] = c.fromLinear(r)
+				y[i] = c.fromLinear(g)
+				b[i] = c.fromLinear(bb)
+			}
+		}
+	})
+}
+
+func decodeConfig(data []byte) (image.Config, error) {
+	d, err := newDecoder(data, options(nil))
+	if err != nil {
+		return image.Config{}, err
+	}
+
+	w, h := int(d.hdr.size.xsize), int(d.hdr.size.ysize)
+	if d.hdr.meta.orient.transposing() {
+		w, h = h, w
+	}
+
+	model := color.Model(color.NRGBAModel)
+	if d.hdr.meta.depth.bitsPerSample > 8 || d.hdr.meta.depth.floatSample {
+		model = color.NRGBA64Model
+	}
+
+	return image.Config{Width: w, Height: h, ColorModel: model}, nil
+}
