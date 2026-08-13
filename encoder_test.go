@@ -183,25 +183,31 @@ func TestEncodeAgainstLibjxl(t *testing.T) {
 
 	dir := t.TempDir()
 
-	for _, dims := range [][2]int{{64, 48}, {17, 9}, {120, 96}} {
+	for _, dims := range [][2]int{{64, 48}, {17, 9}, {120, 96}, {257, 200}, {300, 260}, {512, 512}, {2100, 300}} {
 		w, h := dims[0], dims[1]
+
+		var src image.Image = testImage(w, h)
+
+		if w > groupDim || h > groupDim {
+			src = texturedImage(w, h)
+		}
 
 		var buf bytes.Buffer
 
-		if err := Encode(&buf, testImage(w, h)); err != nil {
+		if err := Encode(&buf, src); err != nil {
 			t.Fatalf("%v: encode gave %v", dims, err)
 		}
 
 		data := buf.Bytes()
 
-		src := filepath.Join(dir, "ours.jxl")
+		jxlPath := filepath.Join(dir, "ours.jxl")
 		dst := filepath.Join(dir, "ours.png")
 
-		if err := os.WriteFile(src, data, 0o600); err != nil {
+		if err := os.WriteFile(jxlPath, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 
-		if out, err := exec.Command(djxl, src, dst).CombinedOutput(); err != nil {
+		if out, err := exec.Command(djxl, jxlPath, dst).CombinedOutput(); err != nil {
 			t.Fatalf("%v: djxl refused our file: %v\n%s", dims, err, out)
 		}
 
@@ -312,6 +318,59 @@ func TestEncodeImage(t *testing.T) {
 
 		if worst > 0.03 {
 			t.Fatalf("%v: reconstruction is %g from the source", dims, worst)
+		}
+	}
+}
+
+func encodeDecode(t *testing.T, src image.Image) (image.Image, int) {
+	t.Helper()
+
+	var buf bytes.Buffer
+
+	if err := Encode(&buf, src); err != nil {
+		t.Fatalf("%v: encode gave %v", src.Bounds(), err)
+	}
+
+	got, err := Decode(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("%v: decode gave %v", src.Bounds(), err)
+	}
+
+	if got.Bounds() != src.Bounds() {
+		t.Fatalf("%v: decoded %v", src.Bounds(), got.Bounds())
+	}
+
+	return got, buf.Len()
+}
+
+func TestEncodeMultiGroup(t *testing.T) {
+	for _, dims := range [][2]int{{257, 200}, {300, 260}, {512, 512}, {600, 129}, {2100, 300}} {
+		w, h := dims[0], dims[1]
+
+		src := texturedImage(w, h)
+		got, size := encodeDecode(t, src)
+
+		cw, ch := min(w, groupDim), min(h, groupDim)
+		crop := texturedImage(cw, ch)
+		alone, _ := encodeDecode(t, crop)
+
+		worst, single := maxError(src, got), maxError(crop, alone)
+
+		t.Logf("%v: %d bytes, worst error %.5f against %.5f for one group",
+			dims, size, worst, single)
+
+		if worst > single*1.5 {
+			t.Fatalf("%v: reconstruction is %g from the source, %g on one group",
+				dims, worst, single)
+		}
+
+		for y := range ch {
+			for x := range cw {
+				if got.At(x, y) != alone.At(x, y) {
+					t.Fatalf("%v: pixel %d,%d is %v alongside other groups, %v alone",
+						dims, x, y, got.At(x, y), alone.At(x, y))
+				}
+			}
 		}
 	}
 }

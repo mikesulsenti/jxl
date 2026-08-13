@@ -32,23 +32,30 @@ func (f *frame) encodeLFGlobal(w *bitWriter) {
 	}
 }
 
-func (f *frame) encode(w *bitWriter, m *imageMetadata, imgW, imgH uint32, body []byte) {
-	if f.hdr.numTOCEntries() != 1 {
-		w.setErr(ErrUnsupported)
+func (f *frame) encode(w *bitWriter, m *imageMetadata, imgW, imgH uint32, body [][]byte) {
+	if f.hdr.numTOCEntries() != len(body) {
+		w.setErr(ErrInvalid)
 
 		return
 	}
 
 	f.hdr.write(w, m, imgW, imgH)
 
-	t := toc{entries: []uint32{uint32(len(body))}}
+	t := toc{entries: make([]uint32, len(body))}
+
+	for i, sec := range body {
+		t.entries[i] = uint32(len(sec))
+	}
+
 	t.write(w)
 
 	if w.err() != nil {
 		return
 	}
 
-	for _, b := range body {
-		w.bits(8, uint64(b))
+	for _, sec := range body {
+		for _, b := range sec {
+			w.bits(8, uint64(b))
+		}
 	}
 }

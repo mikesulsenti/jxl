@@ -1,6 +1,8 @@
 package jxl
 
 import (
+	"fmt"
+	"io"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -50,6 +52,32 @@ func BenchmarkSqueeze(b *testing.B)     { benchStream(b, "bench/rgb_squeeze.jxl"
 func BenchmarkLossless(b *testing.B)    { benchStream(b, "streams/rgb_lossless.jxl") }
 func BenchmarkTree(b *testing.B)        { benchStream(b, "streams/tree_rct.jxl") }
 func BenchmarkGray(b *testing.B)        { benchStream(b, "streams/gray_lossless.jxl") }
+
+func BenchmarkEncode(b *testing.B) {
+	for _, dims := range [][2]int{{256, 256}, {1920, 1080}} {
+		src := texturedImage(dims[0], dims[1])
+
+		b.Run(fmt.Sprintf("%dx%d", dims[0], dims[1]), func(b *testing.B) {
+			var pixels int64
+
+			b.ReportAllocs()
+
+			for b.Loop() {
+				if err := Encode(io.Discard, src); err != nil {
+					b.Fatal(err)
+				}
+
+				pixels += int64(dims[0]) * int64(dims[1])
+			}
+
+			b.StopTimer()
+
+			if n := b.Elapsed().Seconds(); n > 0 {
+				b.ReportMetric(float64(pixels)/n/1e6, "Mpixel/s")
+			}
+		})
+	}
+}
 
 func BenchmarkDequant(b *testing.B) {
 	if !useDequant512 {

@@ -1009,47 +1009,64 @@ func TestVarDCTBodyRoundTrip(t *testing.T) {
 }
 
 func TestFrameEncodeSplitsBack(t *testing.T) {
-	f := testFrame(64, 48)
-	f.hdr.flags = flagSkipAdaptiveLFSmoothing
+	rng := rand.New(rand.NewPCG(11, 13))
 
-	body := []byte{1, 2, 3, 4, 5, 6, 7}
+	for _, dims := range [][2]int{{64, 48}, {600, 300}, {257, 1000}} {
+		f := testFrame(dims[0], dims[1])
+		f.hdr.flags = flagSkipAdaptiveLFSmoothing
 
-	m := defaultImageMetadata()
+		body := make([][]byte, f.hdr.numTOCEntries())
 
-	var w bitWriter
+		for i := range body {
+			body[i] = make([]byte, 1+rng.IntN(9))
 
-	f.encode(&w, &m, 64, 48, body)
+			for j := range body[i] {
+				body[i][j] = uint8(rng.IntN(256))
+			}
+		}
 
-	if err := w.err(); err != nil {
-		t.Fatalf("encode gave %v", err)
-	}
+		m := defaultImageMetadata()
 
-	r := newBitReader(append(w.bytes(), make([]byte, 16)...))
+		var w bitWriter
 
-	var got frameHeader
+		f.encode(&w, &m, uint32(dims[0]), uint32(dims[1]), body)
 
-	got.read(r, &m, 64, 48)
+		if err := w.err(); err != nil {
+			t.Fatalf("%v: encode gave %v", dims, err)
+		}
 
-	var tc toc
+		r := newBitReader(append(w.bytes(), make([]byte, 16)...))
 
-	tc.read(r, got.numTOCEntries())
+		var got frameHeader
 
-	if err := r.err(); err != nil {
-		t.Fatalf("read gave %v", err)
-	}
+		got.read(r, &m, uint32(dims[0]), uint32(dims[1]))
 
-	if got.numTOCEntries() != 1 || len(tc.entries) != 1 || tc.entries[0] != uint32(len(body)) {
-		t.Fatalf("read back %d entries, first %v, want 1 of %d",
-			len(tc.entries), tc.entries, len(body))
-	}
+		var tc toc
 
-	if got.flags != f.hdr.flags || got.encoding != encVarDCT {
-		t.Fatalf("read back flags %d encoding %d", got.flags, got.encoding)
-	}
+		tc.read(r, got.numTOCEntries())
 
-	for i, b := range body {
-		if v := uint8(r.bits(8)); v != b {
-			t.Fatalf("body byte %d is %d, want %d", i, v, b)
+		if err := r.err(); err != nil {
+			t.Fatalf("%v: read gave %v", dims, err)
+		}
+
+		if len(tc.entries) != len(body) {
+			t.Fatalf("%v: read back %d entries, want %d", dims, len(tc.entries), len(body))
+		}
+
+		if got.flags != f.hdr.flags || got.encoding != encVarDCT {
+			t.Fatalf("%v: read back flags %d encoding %d", dims, got.flags, got.encoding)
+		}
+
+		for i, sec := range body {
+			if tc.entries[i] != uint32(len(sec)) {
+				t.Fatalf("%v: entry %d is %d, want %d", dims, i, tc.entries[i], len(sec))
+			}
+
+			for j, b := range sec {
+				if v := uint8(r.bits(8)); v != b {
+					t.Fatalf("%v: section %d byte %d is %d, want %d", dims, i, j, v, b)
+				}
+			}
 		}
 	}
 }

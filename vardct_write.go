@@ -549,21 +549,21 @@ func (f *frame) acContexts() int {
 	return int(f.vardct.numHistograms) * f.vardct.bctx.numACContexts()
 }
 
-func (f *frame) buildACHistograms(s *dctScratch, groups []int) (*histograms, [][]uint32, error) {
+func (f *frame) acValues() [][]uint32 {
+	return make([][]uint32, f.acContexts()+zeroDensityContextLimit-zeroDensityContextCount)
+}
+
+func (f *frame) collectACGroup(s *dctScratch, g int, values [][]uint32) error {
 	v := f.vardct
+
+	return v.walkACGroup(f.blockGroupRect(g), s, 0, 0, 0, &v.passes[0].orders,
+		func(ctx int, packed uint32) {
+			values[ctx] = append(values[ctx], packed)
+		})
+}
+
+func (f *frame) finishACHistograms(values [][]uint32) (*histograms, [][]uint32) {
 	numContexts := f.acContexts()
-
-	values := make([][]uint32, numContexts+zeroDensityContextLimit-zeroDensityContextCount)
-
-	for _, g := range groups {
-		err := v.walkACGroup(f.blockGroupRect(g), s, 0, 0, 0, &v.passes[0].orders,
-			func(ctx int, packed uint32) {
-				values[ctx] = append(values[ctx], packed)
-			})
-		if err != nil {
-			return nil, nil, err
-		}
-	}
 
 	m, clustered := clusterContexts(values[:numContexts], 256)
 
@@ -571,7 +571,19 @@ func (f *frame) buildACHistograms(s *dctScratch, groups []int) (*histograms, [][
 		clustered[0] = append(clustered[0], vs...)
 	}
 
-	hist, counts := buildHistograms(m, clustered)
+	return buildHistograms(m, clustered)
+}
+
+func (f *frame) buildACHistograms(s *dctScratch, groups []int) (*histograms, [][]uint32, error) {
+	values := f.acValues()
+
+	for _, g := range groups {
+		if err := f.collectACGroup(s, g, values); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	hist, counts := f.finishACHistograms(values)
 
 	return hist, counts, nil
 }

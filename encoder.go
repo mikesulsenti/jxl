@@ -32,10 +32,6 @@ func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int, quant in
 		f.hdr.ecUpsampling[i] = 1
 	}
 
-	if f.hdr.numTOCEntries() != 1 {
-		return nil, ErrUnsupported
-	}
-
 	f.lfQuant.factors = lfQuantDefault
 	f.vardct = newVarDCT(f, t.opsin.quant, nil)
 
@@ -253,13 +249,21 @@ func (f *frame) chooseTransforms(s *dctScratch) {
 	}
 }
 
-func (f *frame) transformBlocks(s *dctScratch) bool {
+func (f *frame) transformGroup(s *dctScratch, g int) bool {
 	v := f.vardct
+	rc := f.blockGroupRect(g)
 	offset := 0
 
-	for by := range v.bh {
-		for bx := range v.bw {
-			pos := by*v.bw + bx
+	var lf [3][]float32
+
+	for c := range 3 {
+		lf[c] = make([]float32, maxCoeffBlocks*maxCoeffBlocks)
+	}
+
+	for by := range rc.h {
+		for bx := range rc.w {
+			x, y := rc.x0+bx, rc.y0+by
+			pos := y*v.bw + x
 
 			if v.transform[pos] < 128 {
 				continue
@@ -269,20 +273,14 @@ func (f *frame) transformBlocks(s *dctScratch) bool {
 			cx, cy := t.blocks()
 			numCoeffs := cx * cy * blockSize
 
-			var lf [3][]float32
-
-			for c := range 3 {
-				lf[c] = make([]float32, maxCoeffBlocks*maxCoeffBlocks)
-			}
-
-			if !f.blockToScratch(s, t, bx, by, &lf) {
+			if !f.blockToScratch(s, t, x, y, &lf) {
 				return false
 			}
 
 			for c := range 3 {
-				for y := range cy {
-					for x := range cx {
-						v.lf[c][(by+y)*v.bw+bx+x] = lf[c][y*cx+x]
+				for iy := range cy {
+					for ix := range cx {
+						v.lf[c][(y+iy)*v.bw+x+ix] = lf[c][iy*cx+ix]
 					}
 				}
 			}
@@ -305,24 +303,43 @@ func (f *frame) transformBlocks(s *dctScratch) bool {
 	return true
 }
 
-func (f *frame) encodeBody(s *dctScratch) ([]byte, error) {
-	hist, counts, err := f.buildACHistograms(s, []int{0})
-	if err != nil {
-		return nil, err
+func (f *frame) encodeSections(s *dctScratch) ([][]byte, error) {
+	numLF := f.hdr.numLFGroups()
+	numGroups := f.hdr.numGroups()
+
+	values := f.acValues()
+
+	for g := range numGroups {
+		if !f.transformGroup(s, g) {
+			return nil, ErrUnsupported
+		}
+
+		if err := f.collectACGroup(s, g, values); err != nil {
+			return nil, err
+		}
 	}
 
-	var w bitWriter
+	hist, counts := f.finishACHistograms(values)
+
+	sections := make([]*bitWriter, 2+numLF+numGroups)
+
+	for i := range sections {
+		sections[i] = &bitWriter{}
+	}
 
 	hdr := groupHeader{wp: defaultWeightedHeader()}
 	tree := &maTree{nodes: []treeNode{{property: -1 - predGradient, child: 1}}}
 
-	f.encodeLFGlobal(&w)
-	f.encodeVarDCTLF(&w, 0, &hdr, tree)
-	f.encodeHFMetadata(&w, 0, &hdr, tree)
+	f.encodeLFGlobal(sections[0])
 
-	codes := f.encodeHFGlobal(&w, hist, counts)
+	for g := range numLF {
+		f.encodeVarDCTLF(sections[1+g], g, &hdr, tree)
+		f.encodeHFMetadata(sections[1+g], g, &hdr, tree)
+	}
 
-	if err := w.err(); err != nil {
+	codes := f.encodeHFGlobal(sections[1+numLF], hist, counts)
+
+	if err := sections[1+numLF].err(); err != nil {
 		return nil, err
 	}
 
@@ -330,15 +347,39 @@ func (f *frame) encodeBody(s *dctScratch) ([]byte, error) {
 
 	sw := symbolWriter{codes: codes}
 
-	if err := f.encodeVarDCTGroup(&w, 0, s, hist, &sw, 0); err != nil {
-		return nil, err
+	for g := range numGroups {
+		if !f.transformGroup(s, g) {
+			return nil, ErrUnsupported
+		}
+
+		if err := f.encodeVarDCTGroup(sections[2+numLF+g], g, s, hist, &sw, 0); err != nil {
+			return nil, err
+		}
 	}
 
-	if err := w.err(); err != nil {
-		return nil, err
+	for _, sec := range sections {
+		if err := sec.err(); err != nil {
+			return nil, err
+		}
 	}
 
-	return w.bytes(), nil
+	if f.hdr.numTOCEntries() == 1 {
+		var w bitWriter
+
+		for _, sec := range sections {
+			w.append(sec)
+		}
+
+		return [][]byte{w.bytes()}, w.err()
+	}
+
+	out := make([][]byte, len(sections))
+
+	for i, sec := range sections {
+		out[i] = sec.bytes()
+	}
+
+	return out, nil
 }
 
 func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32) ([]byte, error) {
@@ -378,11 +419,7 @@ func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32) ([]byte, error) 
 
 	f.chooseTransforms(&scratch)
 
-	if !f.transformBlocks(&scratch) {
-		return nil, ErrUnsupported
-	}
-
-	body, err := f.encodeBody(&scratch)
+	body, err := f.encodeSections(&scratch)
 	if err != nil {
 		return nil, err
 	}
