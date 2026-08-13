@@ -2,6 +2,7 @@ package jxl
 
 import (
 	"cmp"
+	"math"
 	"slices"
 )
 
@@ -216,15 +217,93 @@ func clusterContexts(values [][]uint32, limit int) ([]uint8, [][]uint32) {
 		return m, [][]uint32{nil}
 	}
 
-	merged := make([][]uint32, clusters)
+	merged := make([][]uint32, 0, clusters)
+	buckets := make([]map[uint32]uint64, 0, clusters)
+	totals := make([]uint64, 0, clusters)
 
-	for rank, c := range used {
-		k := min(rank, clusters-1)
-		m[c.index] = uint8(k)
-		merged[k] = append(merged[k], values[c.index]...)
+	for _, c := range used {
+		vals := values[c.index]
+		hist := sparseHistogram(vals)
+
+		if len(buckets) < clusters {
+			counts := make(map[uint32]uint64, len(hist))
+
+			for _, e := range hist {
+				counts[e.value] = e.count
+			}
+
+			buckets = append(buckets, counts)
+			totals = append(totals, uint64(len(vals)))
+			merged = append(merged, append([]uint32(nil), vals...))
+			m[c.index] = uint8(len(buckets) - 1)
+
+			continue
+		}
+
+		best, bestCost := 0, math.Inf(1)
+
+		for i, b := range buckets {
+			if cost := mergeCost(b, totals[i], hist, uint64(len(vals))); cost < bestCost {
+				best, bestCost = i, cost
+			}
+		}
+
+		for _, e := range hist {
+			buckets[best][e.value] += e.count
+		}
+
+		totals[best] += uint64(len(vals))
+		merged[best] = append(merged[best], vals...)
+		m[c.index] = uint8(best)
 	}
 
 	return m, merged
+}
+
+type histEntry struct {
+	value uint32
+	count uint64
+}
+
+func sparseHistogram(values []uint32) []histEntry {
+	sorted := make([]uint32, len(values))
+	copy(sorted, values)
+	slices.Sort(sorted)
+
+	var out []histEntry
+
+	for i := 0; i < len(sorted); {
+		j := i
+
+		for j < len(sorted) && sorted[j] == sorted[i] {
+			j++
+		}
+
+		out = append(out, histEntry{sorted[i], uint64(j - i)})
+		i = j
+	}
+
+	return out
+}
+
+func xLogX(n uint64) float64 {
+	if n == 0 {
+		return 0
+	}
+
+	return float64(n) * math.Log2(float64(n))
+}
+
+func mergeCost(a map[uint32]uint64, at uint64, b []histEntry, bt uint64) float64 {
+	cost := xLogX(at+bt) - xLogX(at) - xLogX(bt)
+
+	for _, e := range b {
+		if av, ok := a[e.value]; ok {
+			cost -= xLogX(av+e.count) - xLogX(av) - xLogX(e.count)
+		}
+	}
+
+	return cost
 }
 
 func buildHistograms(contextMap []uint8, values [][]uint32) (*histograms, [][]uint32) {

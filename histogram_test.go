@@ -2,6 +2,7 @@ package jxl
 
 import (
 	"math/rand/v2"
+	"slices"
 	"testing"
 )
 
@@ -432,4 +433,107 @@ func TestUintConfigChoice(t *testing.T) {
 	}
 
 	t.Logf("chosen configuration is at most %.2f%% over the exhaustive best", worst*100)
+}
+
+func clusterCost(m []uint8, merged [][]uint32) float64 {
+	total := 0.0
+
+	for _, vals := range merged {
+		if len(vals) == 0 {
+			continue
+		}
+
+		hist := sparseHistogram(vals)
+		n := uint64(len(vals))
+
+		cost := xLogX(n)
+
+		for _, e := range hist {
+			cost -= xLogX(e.count)
+		}
+
+		total += cost
+	}
+
+	return total
+}
+
+func rankedClusters(values [][]uint32, limit int) ([]uint8, [][]uint32) {
+	type ranked struct {
+		index, count int
+	}
+
+	var used []ranked
+
+	for i, v := range values {
+		if len(v) > 0 {
+			used = append(used, ranked{i, len(v)})
+		}
+	}
+
+	slices.SortFunc(used, func(a, b ranked) int {
+		if a.count != b.count {
+			return b.count - a.count
+		}
+
+		return a.index - b.index
+	})
+
+	m := make([]uint8, len(values))
+	clusters := min(len(used), limit)
+	merged := make([][]uint32, clusters)
+
+	for rank, c := range used {
+		k := min(rank, clusters-1)
+		m[c.index] = uint8(k)
+		merged[k] = append(merged[k], values[c.index]...)
+	}
+
+	return m, merged
+}
+
+func TestClusterContextsBeatsRanking(t *testing.T) {
+	rng := rand.New(rand.NewPCG(151, 157))
+
+	shapes := [][]uint32{
+		{0, 0, 0, 0, 1, 1, 2},
+		{5, 5, 6, 6, 7, 7, 8},
+		{40, 41, 42, 43, 44, 45, 46},
+		{100, 100, 100, 101, 101, 102, 103},
+		{200, 201, 200, 201, 202, 203, 204},
+	}
+
+	values := make([][]uint32, 600)
+
+	for i := range values {
+		s := shapes[i%len(shapes)]
+		n := 4 + rng.IntN(60)
+
+		for range n {
+			values[i] = append(values[i], s[rng.IntN(len(s))])
+		}
+	}
+
+	m, merged := clusterContexts(values, 8)
+
+	if len(merged) != 8 {
+		t.Fatalf("got %d clusters, want 8", len(merged))
+	}
+
+	for i := range values {
+		if int(m[i]) >= len(merged) {
+			t.Fatalf("context %d maps to cluster %d of %d", i, m[i], len(merged))
+		}
+	}
+
+	rm, rmerged := rankedClusters(values, 8)
+
+	got, want := clusterCost(m, merged), clusterCost(rm, rmerged)
+
+	t.Logf("similarity clustering costs %.0f bits, population ranking %.0f", got, want)
+
+	if got >= want*0.75 {
+		t.Fatalf("similarity clustering costs %.0f bits, ranking %.0f, expected a clear win",
+			got, want)
+	}
 }
