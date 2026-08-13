@@ -267,6 +267,41 @@ func idct2d(rows, cols int, data, scratch []float32) {
 	idctColumns(rows, cols, data, cols, data, cols, tmp)
 }
 
+func fdctColumns(n, m int, src []float32, srcStride int, dst []float32, dstStride int, tmp []float32) {
+	inv := 1 / float32(n)
+
+	for j := range m {
+		for i := range n {
+			tmp[i] = src[i*srcStride+j]
+		}
+
+		dct1d(n, tmp, tmp[n:])
+
+		for i := range n {
+			dst[i*dstStride+j] = tmp[i] * inv
+		}
+	}
+}
+
+func fdct2d(rows, cols int, data, scratch []float32) {
+	n := rows * cols
+	block := scratch[:n]
+	tmp := scratch[n:]
+
+	if rows < cols {
+		fdctColumns(rows, cols, data, cols, block, cols, tmp)
+		transposeBlock(rows, cols, block, cols, data, rows)
+		fdctColumns(cols, rows, data, rows, block, rows, tmp)
+		transposeBlock(cols, rows, block, rows, data, cols)
+
+		return
+	}
+
+	fdctColumns(rows, cols, data, cols, data, cols, tmp)
+	transposeBlock(rows, cols, data, cols, block, rows)
+	fdctColumns(cols, rows, block, rows, data, rows, tmp)
+}
+
 func scaledDCT2D(rows, cols int, in, out []float32, outStride int, scratch []float32) {
 	n := rows * cols
 	a, b := scratch[:n], scratch[n:2*n]

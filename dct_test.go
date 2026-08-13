@@ -245,3 +245,93 @@ func TestLehmerGolden(t *testing.T) {
 		}
 	}
 }
+
+func TestFDCT2DInvertsIDCT2D(t *testing.T) {
+	rng := rand.New(rand.NewPCG(11, 13))
+
+	for _, rows := range []int{1, 2, 4, 8, 16, 32, 64, 128, 256} {
+		for _, cols := range []int{1, 2, 4, 8, 16, 32, 64, 128, 256} {
+			if rows*cols > maxCoeffArea || max(rows, cols) > 8*min(rows, cols) {
+				continue
+			}
+
+			n := rows * cols
+
+			in := make([]float32, n)
+			for i := range in {
+				in[i] = float32(rng.NormFloat64())
+			}
+
+			data := make([]float32, n)
+			copy(data, in)
+
+			scratch := make([]float32, 2*n+6*max(rows, cols))
+
+			idct2d(rows, cols, data, scratch)
+			fdct2d(rows, cols, data, scratch)
+
+			var worst float64
+
+			for i := range data {
+				worst = math.Max(worst, math.Abs(float64(data[i]-in[i])))
+			}
+
+			if worst > 1e-4 {
+				t.Fatalf("%dx%d: coefficients round-tripped with error %g", rows, cols, worst)
+			}
+
+			copy(data, in)
+
+			fdct2d(rows, cols, data, scratch)
+			idct2d(rows, cols, data, scratch)
+
+			worst = 0
+
+			for i := range data {
+				worst = math.Max(worst, math.Abs(float64(data[i]-in[i])))
+			}
+
+			if worst > 1e-4 {
+				t.Fatalf("%dx%d: pixels round-tripped with error %g", rows, cols, worst)
+			}
+		}
+	}
+}
+
+func TestTransformFromPixels(t *testing.T) {
+	rng := rand.New(rand.NewPCG(17, 19))
+
+	scratch := make([]float32, 4*maxCoeffArea)
+
+	for range 200 {
+		var pixels, buf, lf [blockSize]float32
+
+		for i := range pixels {
+			pixels[i] = float32(rng.NormFloat64()) * 100
+		}
+
+		buf = pixels
+
+		if !transformFromPixels(hfDCT, buf[:], lf[:], scratch) {
+			t.Fatal("the plain 8x8 transform was refused")
+		}
+
+		buf[0] = 0
+
+		transformToPixels(hfDCT, lf[:], buf[:], scratch)
+
+		for i := range pixels {
+			if d := math.Abs(float64(buf[i] - pixels[i])); d > 2e-3 {
+				t.Fatalf("sample %d: %g, want %g", i, buf[i], pixels[i])
+			}
+		}
+	}
+
+	for tr := hfTransform(0); tr < numHFTransforms; tr++ {
+		var buf, lf [maxCoeffArea]float32
+
+		if got := transformFromPixels(tr, buf[:], lf[:], scratch); got != (tr == hfDCT) {
+			t.Fatalf("transform %d: accepted is %v", tr, got)
+		}
+	}
+}

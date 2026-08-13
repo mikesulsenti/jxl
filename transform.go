@@ -384,3 +384,14 @@ func transformToPixels(t hfTransform, lf, buf, scratch []float32) {
 		idct2d(cy*blockDim, cx*blockDim, buf, scratch)
 	}
 }
+
+func transformFromPixels(t hfTransform, buf, lf, scratch []float32) bool {
+	if t != hfDCT {
+		return false
+	}
+
+	fdct2d(blockDim, blockDim, buf, scratch)
+	lf[0] = buf[0]
+
+	return true
+}
