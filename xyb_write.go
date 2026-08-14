@@ -9,6 +9,44 @@ type xybForward struct {
 	intensityScale float32
 }
 
+func cbrt32(x float32) float32 {
+	if x == 0 || x != x || x > math.MaxFloat32 || x < -math.MaxFloat32 {
+		return x
+	}
+
+	neg := x < 0
+	if neg {
+		x = -x
+	}
+
+	b := math.Float32bits(x)
+	scale := 1.0
+
+	if b < 1<<23 {
+		x *= 1 << 30
+		b = math.Float32bits(x)
+		scale = 1.0 / 1024
+	}
+
+	r := float64(math.Float32frombits(0x548C2B4B - b/3))
+	d := float64(x)
+
+	for range 4 {
+		r = r * (4 - d*r*r*r) / 3
+	}
+
+	c := d * r * r
+	c = (2*c + d/(c*c)) / 3
+
+	y := float32(c * scale)
+
+	if neg {
+		return -y
+	}
+
+	return y
+}
+
 func invert3x3(m [9]float32) ([9]float32, bool) {
 	var out [9]float32
 
@@ -57,9 +95,9 @@ func (f *xybForward) apply(r, g, b float32) (float32, float32, float32) {
 	m := f.inv[3]*r + f.inv[4]*g + f.inv[5]*b
 	s := f.inv[6]*r + f.inv[7]*g + f.inv[8]*b
 
-	l = float32(math.Cbrt(float64((l-f.scaledBias[0])/f.intensityScale))) + f.biasCbrt[0]
-	m = float32(math.Cbrt(float64((m-f.scaledBias[1])/f.intensityScale))) + f.biasCbrt[1]
-	s = float32(math.Cbrt(float64((s-f.scaledBias[2])/f.intensityScale))) + f.biasCbrt[2]
+	l = cbrt32((l-f.scaledBias[0])/f.intensityScale) + f.biasCbrt[0]
+	m = cbrt32((m-f.scaledBias[1])/f.intensityScale) + f.biasCbrt[1]
+	s = cbrt32((s-f.scaledBias[2])/f.intensityScale) + f.biasCbrt[2]
 
 	return (l - m) / 2, (l + m) / 2, s
 }

@@ -3,6 +3,7 @@ package jxl
 import (
 	"math"
 	"math/rand/v2"
+	"sync"
 	"testing"
 )
 
@@ -65,4 +66,46 @@ func TestSRGBToLinearInverts(t *testing.T) {
 	}
 
 	t.Logf("sRGB round trip within %g", worst)
+}
+
+func TestCbrt32MatchesMathCbrt(t *testing.T) {
+	const stride = 16
+
+	var (
+		wg  sync.WaitGroup
+		bad [16]uint64
+	)
+
+	for w := range 16 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			lo := uint64(w) << 28
+
+			for u := lo; u < lo+1<<28; u += stride {
+				x := math.Float32frombits(uint32(u))
+				want := float32(math.Cbrt(float64(x)))
+				got := cbrt32(x)
+
+				if got != want && !(got != got && want != want) {
+					bad[w]++
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	total := uint64(0)
+	for _, n := range bad {
+		total += n
+	}
+
+	if total != 0 {
+		t.Fatalf("%d of 2^32 float32 inputs differ from math.Cbrt", total)
+	}
+
+	t.Logf("every %d-th float32 agrees with math.Cbrt", uint64(stride))
 }
