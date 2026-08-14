@@ -286,12 +286,33 @@ func sparseHistogram(values []uint32) []histEntry {
 	return out
 }
 
+// log2Int caches math.Log2 over the small integers the cost models spend their
+// time on, so the values are the same ones math.Log2 returns rather than an
+// approximation of them. Encoded output does not change.
+const log2TableSize = 1 << 12
+
+var log2Table = func() (t [log2TableSize]float64) {
+	for i := 1; i < len(t); i++ {
+		t[i] = math.Log2(float64(i))
+	}
+
+	return t
+}()
+
+func log2Int(n uint64) float64 {
+	if n < log2TableSize {
+		return log2Table[n]
+	}
+
+	return math.Log2(float64(n))
+}
+
 func xLogX(n uint64) float64 {
 	if n == 0 {
 		return 0
 	}
 
-	return float64(n) * math.Log2(float64(n))
+	return float64(n) * log2Int(n)
 }
 
 func mergeCost(a map[uint32]uint64, at uint64, b []histEntry, bt uint64) float64 {

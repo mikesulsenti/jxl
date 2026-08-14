@@ -121,7 +121,7 @@ func (f *frame) blockCost(s *dctScratch, t hfTransform, bx, by int, lf *[3][]flo
 	for c := range 3 {
 		for k := cx * cy; k < numCoeffs; k++ {
 			if q := s.coeffs[c][order[k]]; q != 0 {
-				rate += 1 + math.Log2(float64(absInt32(q))+1)
+				rate += 1 + log2Int(uint64(absInt32(q))+1)
 			}
 		}
 
