@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"math"
 	"os"
@@ -274,4 +276,42 @@ func writeStreamRatchet(t *testing.T, res map[string]string) {
 	if err := os.WriteFile(streamRatchetPath, []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func peakAgainstPNG(got image.Image, path string) (float64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	ref, err := png.Decode(f)
+	if err != nil {
+		return 0, err
+	}
+
+	gb, rb := got.Bounds(), ref.Bounds()
+	if gb.Dx() != rb.Dx() || gb.Dy() != rb.Dy() {
+		return 0, fmt.Errorf("%dx%d, the reference is %dx%d", gb.Dx(), gb.Dy(), rb.Dx(), rb.Dy())
+	}
+
+	var peak float64
+
+	for y := range gb.Dy() {
+		for x := range gb.Dx() {
+			r1, g1, b1, a1 := got.At(gb.Min.X+x, gb.Min.Y+y).RGBA()
+			r2, g2, b2, a2 := ref.At(rb.Min.X+x, rb.Min.Y+y).RGBA()
+
+			for _, d := range [4]float64{
+				math.Abs(float64(r1) - float64(r2)),
+				math.Abs(float64(g1) - float64(g2)),
+				math.Abs(float64(b1) - float64(b2)),
+				math.Abs(float64(a1) - float64(a2)),
+			} {
+				peak = math.Max(peak, d/65535)
+			}
+		}
+	}
+
+	return peak, nil
 }

@@ -670,21 +670,31 @@ func TestEncodeAgainstCjxl(t *testing.T) {
 	}
 }
 
+// ssimulacra2 is libjxl's perceptual metric, which the adaptive quantisation
+// tests are judged by. It is taken from SSIMULACRA2_BIN, or from PATH, and an
+// empty result skips those tests.
+var ssimulacra2Bin = func() string {
+	name := os.Getenv("SSIMULACRA2_BIN")
+	if name == "" {
+		name = "ssimulacra2"
+	}
+
+	bin, err := exec.LookPath(name)
+	if err != nil {
+		return ""
+	}
+
+	return bin
+}()
+
 func ssimulacra2Path(t *testing.T) string {
 	t.Helper()
 
-	for _, p := range []string{
-		"/temp/jxl/libjxl/build/tools/ssimulacra2",
-		"ssimulacra2",
-	} {
-		if found, err := exec.LookPath(p); err == nil {
-			return found
-		}
+	if ssimulacra2Bin == "" {
+		t.Skip("ssimulacra2 not found (set SSIMULACRA2_BIN)")
 	}
 
-	t.Skip("ssimulacra2 is not built")
-
-	return ""
+	return ssimulacra2Bin
 }
 
 func ssimulacra2(t *testing.T, tool, dir string, src, got image.Image) float64 {

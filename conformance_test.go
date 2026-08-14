@@ -16,15 +16,33 @@ import (
 	"testing"
 )
 
-func conformanceRoot(t *testing.T) string {
+// The corpora are large and live outside the repository. CONFORMANCE_DIR is a
+// colon separated list of them, and each test takes the entries it recognises.
+func conformanceDirs(t *testing.T) []string {
 	t.Helper()
 
-	dir := os.Getenv("CONFORMANCE_DIR")
-	if dir == "" {
+	env := os.Getenv("CONFORMANCE_DIR")
+	if env == "" {
 		t.Skip("set CONFORMANCE_DIR")
 	}
 
-	return dir
+	return strings.Split(env, ":")
+}
+
+// conformanceRoot is the official suite, which keeps its case lists in
+// testcases and its references in a tree beside them.
+func conformanceRoot(t *testing.T) string {
+	t.Helper()
+
+	for _, dir := range conformanceDirs(t) {
+		if _, err := os.Stat(filepath.Join(dir, "testcases")); err == nil {
+			return dir
+		}
+	}
+
+	t.Skip("no conformance suite in CONFORMANCE_DIR")
+
+	return ""
 }
 
 var updateRatchet = flag.Bool("conformance.update", false,
@@ -345,5 +363,107 @@ func TestConformanceICC(t *testing.T) {
 
 			t.Logf("%d bytes, byte-exact", len(want))
 		})
+	}
+}
+
+// corpusRoot is the image corpus, which keeps libjxl's own decodes in reference.
+func corpusRoot(t *testing.T) string {
+	t.Helper()
+
+	for _, dir := range conformanceDirs(t) {
+		if _, err := os.Stat(filepath.Join(dir, "reference")); err == nil {
+			return dir
+		}
+	}
+
+	t.Skip("no image corpus in CONFORMANCE_DIR")
+
+	return ""
+}
+
+// corpusUnsupported are the corpus files this decoder knowingly refuses, with
+// the reason. Every other file has to decode, so the set only ever shrinks.
+var corpusUnsupported = map[string]string{
+	"features/ec_resampling_2x.jxl": "extra channel upsampled independently of the colour channels",
+	"features/ec_resampling_4x.jxl": "extra channel upsampled independently of the colour channels",
+	"photographic/candle.jxl":       "float16 samples",
+}
+
+// corpusTolerance is the largest difference from libjxl's own output this
+// corpus reaches, in fractions of full scale. Two lossy files with alpha reach
+// 2/255 because a one step alpha difference is amplified by the premultiply in
+// color.Color.RGBA; every other file is within one step.
+const corpusTolerance = 0.01
+
+var corpusSubdirs = []string{"conformance", "features", "photographic", "edge-cases"}
+
+// TestCorpus decodes an external corpus and compares every file against the
+// reference outputs libjxl produced from it. Set CONFORMANCE_DIR to run it.
+func TestCorpus(t *testing.T) {
+	root := corpusRoot(t)
+
+	var exact, near, refused, total int
+
+	for _, sub := range corpusSubdirs {
+		files, err := filepath.Glob(filepath.Join(root, sub, "*.jxl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, path := range files {
+			name := sub + "/" + filepath.Base(path)
+			total++
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := Decode(bytes.NewReader(data), Options{Level: 10})
+			if err != nil {
+				why, known := corpusUnsupported[name]
+				if !known {
+					t.Errorf("%s: %v", name, err)
+
+					continue
+				}
+
+				refused++
+
+				t.Logf("%s: refused, %s", name, why)
+
+				continue
+			}
+
+			ref := filepath.Join(root, "reference", sub,
+				strings.TrimSuffix(filepath.Base(path), ".jxl")+".png")
+
+			worst, err := peakAgainstPNG(got, ref)
+			if err != nil {
+				t.Logf("%s: no reference (%v)", name, err)
+
+				continue
+			}
+
+			switch {
+			case worst == 0:
+				exact++
+			case worst <= corpusTolerance:
+				near++
+			default:
+				t.Errorf("%s: differs from libjxl by %g", name, worst)
+			}
+		}
+	}
+
+	if total == 0 {
+		t.Skip("no corpus files present")
+	}
+
+	t.Logf("%d files: %d exact, %d within %g, %d knowingly refused",
+		total, exact, near, corpusTolerance, refused)
+
+	if refused != len(corpusUnsupported) {
+		t.Errorf("%d files refused, the known set has %d", refused, len(corpusUnsupported))
 	}
 }
