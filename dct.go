@@ -20,9 +20,6 @@ var (
 	fdctConsts     [35][8]float32
 )
 
-// The forward kernels index fdctConsts, which repeats idctConsts and appends
-// the scales dct1d's callers apply: 1/n, and one for a pass that must not scale
-// because it is a sub-step of a larger transform.
 const (
 	fdctInv8  = 31
 	fdctInv16 = 32

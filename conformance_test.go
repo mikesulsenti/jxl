@@ -16,8 +16,7 @@ import (
 	"testing"
 )
 
-// The corpora are large and live outside the repository. CONFORMANCE_DIR is a
-// colon separated list of them, and each test takes the entries it recognises.
+// CONFORMANCE_DIR is a colon separated list of corpora.
 func conformanceDirs(t *testing.T) []string {
 	t.Helper()
 
@@ -29,8 +28,6 @@ func conformanceDirs(t *testing.T) []string {
 	return strings.Split(env, ":")
 }
 
-// conformanceRoot is the official suite, which keeps its case lists in
-// testcases and its references in a tree beside them.
 func conformanceRoot(t *testing.T) string {
 	t.Helper()
 
@@ -366,7 +363,6 @@ func TestConformanceICC(t *testing.T) {
 	}
 }
 
-// corpusRoot is the image corpus, which keeps libjxl's own decodes in reference.
 func corpusRoot(t *testing.T) string {
 	t.Helper()
 
@@ -381,24 +377,19 @@ func corpusRoot(t *testing.T) string {
 	return ""
 }
 
-// corpusUnsupported are the corpus files this decoder knowingly refuses, with
-// the reason. Every other file has to decode, so the set only ever shrinks.
+// Refused files, with the reason. The set only shrinks.
 var corpusUnsupported = map[string]string{
 	"features/ec_resampling_2x.jxl": "extra channel upsampled independently of the colour channels",
 	"features/ec_resampling_4x.jxl": "extra channel upsampled independently of the colour channels",
 	"photographic/candle.jxl":       "float16 samples",
 }
 
-// corpusTolerance is the largest difference from libjxl's own output this
-// corpus reaches, in fractions of full scale. Two lossy files with alpha reach
-// 2/255 because a one step alpha difference is amplified by the premultiply in
-// color.Color.RGBA; every other file is within one step.
+// Largest difference from libjxl this corpus reaches, of full scale.
 const corpusTolerance = 0.01
 
 var corpusSubdirs = []string{"conformance", "features", "photographic", "edge-cases"}
 
-// TestCorpus decodes an external corpus and compares every file against the
-// reference outputs libjxl produced from it. Set CONFORMANCE_DIR to run it.
+// TestCorpus compares an external corpus against libjxl's own decodes.
 func TestCorpus(t *testing.T) {
 	root := corpusRoot(t)
 

@@ -286,9 +286,6 @@ func sparseHistogram(values []uint32) []histEntry {
 	return out
 }
 
-// log2Int caches math.Log2 over the small integers the cost models spend their
-// time on, so the values are the same ones math.Log2 returns rather than an
-// approximation of them. Encoded output does not change.
 const log2TableSize = 1 << 12
 
 var log2Table = func() (t [log2TableSize]float64) {

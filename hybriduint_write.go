@@ -75,19 +75,28 @@ func valueHistogram(values []uint32) ([]uint32, []uint32) {
 	return distinct, weights
 }
 
-func uintConfigCost(h hybridUint, distinct, weights []uint32, tokens []uint32, maxAlphabet int) (float64, bool) {
+func uintConfigCost(h hybridUint, distinct, weights []uint32, s *uintCostScratch,
+	maxAlphabet int, limit float64,
+) (float64, bool) {
+	tokens, used := s.tokens, s.used[:0]
+
+	defer func() { s.used = used }()
+
 	var raw, total float64
 
 	for i, v := range distinct {
 		token, nbits, _ := h.encode(v)
 
-		if int(token) >= maxAlphabet {
-			for _, u := range distinct[:i] {
-				t, _, _ := h.encode(u)
+		if int(token) >= maxAlphabet || raw >= limit {
+			for _, t := range used {
 				tokens[t] = 0
 			}
 
 			return 0, false
+		}
+
+		if tokens[token] == 0 {
+			used = append(used, token)
 		}
 
 		tokens[token] += weights[i]
@@ -97,16 +106,18 @@ func uintConfigCost(h hybridUint, distinct, weights []uint32, tokens []uint32, m
 
 	cost := raw
 
-	for _, v := range distinct {
-		token, _, _ := h.encode(v)
-
-		if c := tokens[token]; c > 0 {
-			cost += float64(c)*math.Log2(total/float64(c)) + tableBitsPerSymbol
-			tokens[token] = 0
-		}
+	for _, t := range used {
+		c := tokens[t]
+		cost += float64(c)*math.Log2(total/float64(c)) + tableBitsPerSymbol
+		tokens[t] = 0
 	}
 
 	return cost, true
+}
+
+type uintCostScratch struct {
+	tokens []uint32
+	used   []uint32
 }
 
 const tableBitsPerSymbol = 3
@@ -114,7 +125,7 @@ const tableBitsPerSymbol = 3
 func chooseUintConfig(distinct, weights []uint32, logAlphaSize, maxAlphabet int) hybridUint {
 	best := newHybridUint(uint32(logAlphaSize), 0, 0)
 	bestCost := math.Inf(1)
-	tokens := make([]uint32, maxAlphabet)
+	s := &uintCostScratch{tokens: make([]uint32, maxAlphabet)}
 
 	for se := 0; se <= logAlphaSize; se++ {
 		for msb := 0; msb <= se; msb++ {
@@ -125,7 +136,7 @@ func chooseUintConfig(distinct, weights []uint32, logAlphaSize, maxAlphabet int)
 
 				h := newHybridUint(uint32(se), uint32(msb), uint32(lsb))
 
-				cost, ok := uintConfigCost(h, distinct, weights, tokens, maxAlphabet)
+				cost, ok := uintConfigCost(h, distinct, weights, s, maxAlphabet, bestCost)
 				if ok && cost < bestCost {
 					best, bestCost = h, cost
 				}
