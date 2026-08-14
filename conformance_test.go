@@ -3,13 +3,18 @@ package jxl
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	"image/png"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -457,4 +462,142 @@ func TestCorpus(t *testing.T) {
 	if refused != len(corpusUnsupported) {
 		t.Errorf("%d files refused, the known set has %d", refused, len(corpusUnsupported))
 	}
+}
+
+func opaqueError(src, got image.Image) (float64, float64) {
+	b, gb := src.Bounds(), got.Bounds()
+
+	var sum, peak float64
+
+	n := 0
+
+	for y := range b.Dy() {
+		for x := range b.Dx() {
+			r1, g1, b1, a := src.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			if a != 0xffff {
+				continue
+			}
+
+			r2, g2, b2, _ := got.At(gb.Min.X+x, gb.Min.Y+y).RGBA()
+			n++
+
+			for _, d := range [3]float64{
+				float64(r1) - float64(r2),
+				float64(g1) - float64(g2),
+				float64(b1) - float64(b2),
+			} {
+				d /= 65535
+				sum += d * d
+				peak = math.Max(peak, math.Abs(d))
+			}
+		}
+	}
+
+	if n == 0 {
+		return 0, 0
+	}
+
+	return math.Sqrt(sum / float64(3*n)), peak
+}
+
+// Largest root mean square error a corpus image reaches, of full scale. The
+// two 3x3 files set it, and cjxl is no better on them.
+const encodeCorpusTolerance = 0.12
+
+// TestEncodeCorpus encodes every corpus reference and reads it back, with djxl
+// as the second opinion when it is on the path.
+func TestEncodeCorpus(t *testing.T) {
+	root := corpusRoot(t)
+	djxl, _ := exec.LookPath("djxl")
+	dir := t.TempDir()
+
+	type result struct {
+		name       string
+		rmse, peak float64
+	}
+
+	var worst []result
+
+	total, size := 0, 0
+
+	for _, sub := range corpusSubdirs {
+		files, err := filepath.Glob(filepath.Join(root, "reference", sub, "*.png"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, path := range files {
+			name := sub + "/" + filepath.Base(path)
+
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			src, err := png.Decode(f)
+			f.Close()
+
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			var buf bytes.Buffer
+
+			if err := Encode(&buf, src); err != nil {
+				t.Errorf("%s: encode gave %v", name, err)
+
+				continue
+			}
+
+			data := buf.Bytes()
+			total++
+			size += len(data)
+
+			got, err := Decode(bytes.NewReader(data), Options{Level: 10})
+			if err != nil {
+				t.Errorf("%s: our decoder gave %v", name, err)
+
+				continue
+			}
+
+			if got.Bounds().Dx() != src.Bounds().Dx() || got.Bounds().Dy() != src.Bounds().Dy() {
+				t.Errorf("%s: decoded %v, source is %v", name, got.Bounds(), src.Bounds())
+
+				continue
+			}
+
+			rmse, peak := opaqueError(src, got)
+			worst = append(worst, result{name, rmse, peak})
+
+			if rmse > encodeCorpusTolerance {
+				t.Errorf("%s: root mean square error %g", name, rmse)
+			}
+
+			if djxl == "" {
+				continue
+			}
+
+			out := filepath.Join(dir, "ours.jxl")
+
+			if err := os.WriteFile(out, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if o, err := exec.Command(djxl, out, filepath.Join(dir, "ours.png")).CombinedOutput(); err != nil {
+				t.Errorf("%s: djxl refused our file: %v\n%s", name, err, o)
+			}
+		}
+	}
+
+	if total == 0 {
+		t.Skip("no corpus references present")
+	}
+
+	slices.SortFunc(worst, func(a, b result) int { return cmp.Compare(b.rmse, a.rmse) })
+
+	for _, r := range worst[:min(5, len(worst))] {
+		t.Logf("%-42s rmse %.4f peak %.4f", r.name, r.rmse, r.peak)
+	}
+
+	t.Logf("%d images encoded to %d bytes, djxl read them all: %v", total, size, djxl != "")
 }
