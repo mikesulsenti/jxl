@@ -385,22 +385,165 @@ func transformToPixels(t hfTransform, lf, buf, scratch []float32) {
 	}
 }
 
+func fdct2Top(s int, in, out []float32) {
+	n := s / 2
+
+	for y := range n {
+		for x := range n {
+			d00 := in[y*2*blockDim+x*2]
+			d01 := in[y*2*blockDim+x*2+1]
+			d10 := in[(y*2+1)*blockDim+x*2]
+			d11 := in[(y*2+1)*blockDim+x*2+1]
+
+			out[y*blockDim+x] = 0.25 * (d00 + d01 + d10 + d11)
+			out[y*blockDim+n+x] = 0.25 * (d00 + d01 - d10 - d11)
+			out[(y+n)*blockDim+x] = 0.25 * (d00 - d01 + d10 - d11)
+			out[(y+n)*blockDim+n+x] = 0.25 * (d00 - d01 - d10 + d11)
+		}
+	}
+}
+
+func fromPixelsDCT4X4(buf, scratch []float32) {
+	var (
+		coeffs [blockSize]float32
+		dcs    [4]float32
+	)
+
+	for y := range 2 {
+		for x := range 2 {
+			var block [16]float32
+
+			for iy := range 4 {
+				for ix := range 4 {
+					block[iy*4+ix] = buf[(y*4+iy)*blockDim+x*4+ix]
+				}
+			}
+
+			fdct2d(4, 4, block[:], scratch)
+
+			dcs[y*2+x] = block[0]
+
+			for iy := range 4 {
+				for ix := range 4 {
+					coeffs[(y+iy*2)*blockDim+x+ix*2] = block[iy*4+ix]
+				}
+			}
+		}
+	}
+
+	coeffs[0] = 0.25 * (dcs[0] + dcs[1] + dcs[2] + dcs[3])
+	coeffs[1] = 0.25 * (dcs[0] + dcs[1] - dcs[2] - dcs[3])
+	coeffs[blockDim] = 0.25 * (dcs[0] - dcs[1] + dcs[2] - dcs[3])
+	coeffs[blockDim+1] = 0.25 * (dcs[0] - dcs[1] - dcs[2] + dcs[3])
+
+	copy(buf[:blockSize], coeffs[:])
+}
+
+func fromPixelsDCT8X4(buf, scratch []float32) {
+	var (
+		coeffs [blockSize]float32
+		dcs    [2]float32
+	)
+
+	for x := range 2 {
+		var block [32]float32
+
+		for iy := range blockDim {
+			for ix := range 4 {
+				block[iy*4+ix] = buf[iy*blockDim+x*4+ix]
+			}
+		}
+
+		fdct2d(blockDim, 4, block[:], scratch)
+
+		dcs[x] = block[0]
+
+		for iy := range 4 {
+			for ix := range blockDim {
+				coeffs[(x+iy*2)*blockDim+ix] = block[iy*blockDim+ix]
+			}
+		}
+	}
+
+	coeffs[0] = 0.5 * (dcs[0] + dcs[1])
+	coeffs[blockDim] = 0.5 * (dcs[0] - dcs[1])
+
+	copy(buf[:blockSize], coeffs[:])
+}
+
+func fromPixelsDCT4X8(buf, scratch []float32) {
+	var (
+		coeffs [blockSize]float32
+		dcs    [2]float32
+	)
+
+	for y := range 2 {
+		var block [32]float32
+
+		for iy := range 4 {
+			for ix := range blockDim {
+				block[iy*blockDim+ix] = buf[(y*4+iy)*blockDim+ix]
+			}
+		}
+
+		fdct2d(4, blockDim, block[:], scratch)
+
+		dcs[y] = block[0]
+
+		for iy := range 4 {
+			for ix := range blockDim {
+				coeffs[(y+iy*2)*blockDim+ix] = block[iy*blockDim+ix]
+			}
+		}
+	}
+
+	coeffs[0] = 0.5 * (dcs[0] + dcs[1])
+	coeffs[blockDim] = 0.5 * (dcs[0] - dcs[1])
+
+	copy(buf[:blockSize], coeffs[:])
+}
+
+func fromPixelsDCT2X2(buf []float32) {
+	var tmp [blockSize]float32
+
+	fdct2Top(blockDim, buf, tmp[:])
+	fdct2Top(4, tmp[:], buf)
+
+	for y := range 4 {
+		copy(tmp[y*blockDim:y*blockDim+4], buf[y*blockDim:y*blockDim+4])
+	}
+
+	fdct2Top(2, buf, tmp[:])
+
+	copy(buf[:blockSize], tmp[:])
+}
+
 func transformFromPixels(t hfTransform, buf, lf, scratch []float32) bool {
 	cx, cy := t.blocks()
 
-	if t != hfDCT && cx*cy == 1 {
-		return false
-	}
+	switch t {
+	case hfDCT:
+		fdct2d(blockDim, blockDim, buf, scratch)
+	case hfDCT4X4:
+		fromPixelsDCT4X4(buf, scratch)
+	case hfDCT8X4:
+		fromPixelsDCT8X4(buf, scratch)
+	case hfDCT4X8:
+		fromPixelsDCT4X8(buf, scratch)
+	case hfDCT2X2:
+		fromPixelsDCT2X2(buf)
+	default:
+		if cx*cy == 1 {
+			return false
+		}
 
-	fdct2d(cy*blockDim, cx*blockDim, buf, scratch)
-
-	if t == hfDCT {
-		lf[0] = buf[0]
+		fdct2d(cy*blockDim, cx*blockDim, buf, scratch)
+		unscaledDCT2D(cy, cx, buf, blockDim*max(cx, cy), lf, scratch)
 
 		return true
 	}
 
-	unscaledDCT2D(cy, cx, buf, blockDim*max(cx, cy), lf, scratch)
+	lf[0] = buf[0]
 
 	return true
 }

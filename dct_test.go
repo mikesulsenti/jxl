@@ -3,6 +3,7 @@ package jxl
 import (
 	"math"
 	"math/rand/v2"
+	"slices"
 	"testing"
 )
 
@@ -331,10 +332,54 @@ func TestTransformFromPixels(t *testing.T) {
 		var buf, lf [maxCoeffArea]float32
 
 		cx, cy := tr.blocks()
-		want := tr == hfDCT || cx*cy > 1
+		want := cx*cy > 1 || slices.Contains(smallTransforms, tr)
 
 		if got := transformFromPixels(tr, buf[:], lf[:], scratch); got != want {
 			t.Fatalf("transform %d: accepted is %v, want %v", tr, got, want)
+		}
+	}
+}
+
+var smallTransforms = []hfTransform{hfDCT, hfDCT4X4, hfDCT8X4, hfDCT4X8, hfDCT2X2}
+
+func TestTransformFromPixelsSmall(t *testing.T) {
+	rng := rand.New(rand.NewPCG(23, 29))
+
+	scratch := make([]float32, 4*maxCoeffArea)
+
+	for _, tr := range smallTransforms {
+		worst := 0.0
+
+		for range 200 {
+			var pixels, buf, lf [blockSize]float32
+
+			for i := range pixels {
+				pixels[i] = float32(rng.NormFloat64()) * 100
+			}
+
+			buf = pixels
+
+			if !transformFromPixels(tr, buf[:], lf[:], scratch) {
+				t.Fatalf("transform %d was refused", tr)
+			}
+
+			if lf[0] != buf[0] {
+				t.Fatalf("transform %d: lf is %g, the DC is %g", tr, lf[0], buf[0])
+			}
+
+			buf[0] = 0
+
+			transformToPixels(tr, lf[:], buf[:], scratch)
+
+			for i := range pixels {
+				worst = math.Max(worst, math.Abs(float64(buf[i]-pixels[i])))
+			}
+		}
+
+		t.Logf("transform %d round-trips to within %.2e", tr, worst)
+
+		if worst > 5e-3 {
+			t.Fatalf("transform %d round-trips to %g", tr, worst)
 		}
 	}
 }
