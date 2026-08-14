@@ -29,6 +29,8 @@ func dspInit() {
 	useIDCTCols = true
 	useTranspose8 = true
 	useDequant = true
+	useQuant = true
+	useFDCTCols = true
 }
 
 func idct8x8([]float32) bool { return false }
@@ -90,6 +92,57 @@ func dequant(a *dequantArgs) bool {
 
 	return true
 }
-func quantize(*quantArgs) bool { return false }
 
-func fdctCols8(int, []float32, int, []float32, int) bool { return false }
+//go:noescape
+func quantizeRVV(a *quantArgs)
+
+func quantize(a *quantArgs) bool {
+	if !useQuant {
+		return false
+	}
+
+	quantizeRVV(a)
+
+	return true
+}
+
+//go:noescape
+func fdct8ColsRVV(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *float32, n int)
+
+//go:noescape
+func fdct16ColsRVV(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *float32, n int, tmp *float32)
+
+//go:noescape
+func fdct32SplitRVV(src *float32, srcStride int, half *float32, k *[34][8]float32, n int)
+
+//go:noescape
+func fdct32MergeRVV(half *float32, dst *float32, dstStride int, k *[34][8]float32, scale *float32, n int)
+
+func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int) bool {
+	if !useFDCTCols {
+		return false
+	}
+
+	switch n {
+	case 8:
+		fdct8ColsRVV(&src[0], srcStride, &dst[0], dstStride, &fdctConsts, &fdctConsts[fdctInv8][0], 8)
+	case 16:
+		var tmp [8 * 32]float32
+
+		fdct16ColsRVV(&src[0], srcStride, &dst[0], dstStride, &fdctConsts,
+			&fdctConsts[fdctInv16][0], 8, &tmp[0])
+	case 32:
+		var half [32 * 32]float32
+
+		var tmp [8 * 32]float32
+
+		fdct32SplitRVV(&src[0], srcStride, &half[0], &fdctConsts, 8)
+		fdct16ColsRVV(&half[0], 32, &half[0], 32, &fdctConsts, &fdctOne[0], 8, &tmp[0])
+		fdct16ColsRVV(&half[16*32], 32, &half[16*32], 32, &fdctConsts, &fdctOne[0], 8, &tmp[0])
+		fdct32MergeRVV(&half[0], &dst[0], dstStride, &fdctConsts, &fdctConsts[fdctInv32][0], 8)
+	default:
+		return false
+	}
+
+	return true
+}
