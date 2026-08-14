@@ -557,7 +557,7 @@ func (f *frame) encodeHFMetadata(w *bitWriter, g int, hdr *groupHeader, tree *ma
 	img.encodeStream(w, hdr, tree, 1+2*f.hdr.numLFGroups()+g)
 }
 
-func (f *frame) encodeHFGlobal(w *bitWriter, hist *histograms, counts [][]uint32) [][]prefixCode {
+func (f *frame) encodeHFGlobal(w *bitWriter, hist *histograms, counts [][]uint32) *symbolWriter {
 	v := f.vardct
 
 	if f.hdr.pass.numPasses != 1 {
@@ -626,14 +626,20 @@ func (f *frame) buildACHistograms(s *dctScratch, groups []int) (*histograms, [][
 }
 
 func (f *frame) encodeVarDCTGroup(w *bitWriter, g int, s *dctScratch, hist *histograms,
-	sw *symbolWriter, histIdx int,
+	codes, sw *symbolWriter, histIdx int,
 ) error {
 	v := f.vardct
 
 	w.bits(ceilLog2(v.numHistograms), uint64(histIdx))
 
-	return v.walkACGroup(f.blockGroupRect(g), s, 0, 0, histIdx, &v.passes[0].orders,
+	sw.reset(codes)
+
+	err := v.walkACGroup(f.blockGroupRect(g), s, 0, 0, histIdx, &v.passes[0].orders,
 		func(ctx int, packed uint32) {
 			sw.writeUnsigned(hist, w, ctx, packed)
 		})
+
+	sw.flush(w)
+
+	return err
 }

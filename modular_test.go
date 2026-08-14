@@ -265,3 +265,65 @@ func TestModularRejected(t *testing.T) {
 		t.Fatalf("an indivisible residual gave %v, want %v", w2.err(), ErrInvalid)
 	}
 }
+
+func TestModularDebug(t *testing.T) {
+	rng := rand.New(rand.NewPCG(101, 103))
+
+	src := randomModImage(rng, [][2]int{{16, 12}, {8, 8}, {1, 5}, {5, 1}, {33, 3}}, 0)
+
+	tree := &maTree{nodes: serializeTree(&treeSpec{
+		property: -1, predictor: predGradient, mul: 1,
+	})}
+
+	var w bitWriter
+
+	src.encodeStream(&w, &groupHeader{wp: defaultWeightedHeader()}, tree, 3)
+
+	t.Logf("%d bytes", len(w.bytes()))
+
+	if err := w.err(); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	r := newBitReader(append(w.bytes(), make([]byte, 16)...))
+
+	var hdr groupHeader
+
+	hdr.read(r)
+
+	var back maTree
+
+	back.read(r, 1024)
+
+	t.Logf("tree read err %v, nodes %d want %d", r.err(), len(back.nodes), len(tree.nodes))
+
+	got := emptyLike(src)
+
+	var sr symbolReader
+
+	sr.init(&back.histograms, r, 0)
+
+	var sc modScratch
+
+	wph := defaultWeightedHeader()
+
+	for i := range got.channels {
+		got.decodeChannel(r, &sr, &back, &wph, i, 3, &sc)
+	}
+
+	t.Logf("data read err %v final %v", r.err(), sr.checkFinalState(&back.histograms, r))
+
+	for i, c := range src.channels {
+		for j, v := range c.data {
+			if got.channels[i].data[j] != v {
+				t.Fatalf("channel %d sample %d: %d want %d", i, j, got.channels[i].data[j], v)
+			}
+		}
+	}
+
+	for i := range back.nodes {
+		if i < len(tree.nodes) && back.nodes[i] != tree.nodes[i] {
+			t.Logf("node %d: %+v want %+v", i, back.nodes[i], tree.nodes[i])
+		}
+	}
+}

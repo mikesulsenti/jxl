@@ -312,10 +312,6 @@ func buildAliasMap(alphabetSize, logBucket int, dist []uint16, s *ansScratch) []
 
 func (h *ansHistogram) read(r *bitReader, logAlphaSize int, s *ansScratch) {
 	tableSize := 1 << logAlphaSize
-	h.logBucket = logSumProbs - logAlphaSize
-	bucketSize := uint16(1) << h.logBucket
-	h.bucketMask = uint32(bucketSize) - 1
-	h.singleSymbol = -1
 
 	dist := s.dist[:tableSize]
 
@@ -339,6 +335,15 @@ func (h *ansHistogram) read(r *bitReader, logAlphaSize int, s *ansScratch) {
 	if r.err() != nil {
 		return
 	}
+
+	h.build(dist, alphabetSize, logAlphaSize, s)
+}
+
+func (h *ansHistogram) build(dist []uint16, alphabetSize, logAlphaSize int, s *ansScratch) {
+	h.logBucket = logSumProbs - logAlphaSize
+	bucketSize := uint16(1) << h.logBucket
+	h.bucketMask = uint32(bucketSize) - 1
+	h.singleSymbol = -1
 
 	for i, d := range dist {
 		if d == sumProbs {
@@ -366,8 +371,7 @@ func (h *ansHistogram) read(r *bitReader, logAlphaSize int, s *ansScratch) {
 	h.buckets = buildAliasMap(alphabetSize, h.logBucket, dist, s)
 }
 
-func (h *ansHistogram) decode(r *bitReader, state *uint32) uint32 {
-	idx := *state & 0xfff
+func (h *ansHistogram) lookup(idx uint32) (symbol, dist, offset uint32) {
 	i := idx >> h.logBucket
 	pos := idx & h.bucketMask
 
@@ -378,9 +382,15 @@ func (h *ansHistogram) decode(r *bitReader, state *uint32) uint32 {
 		alias = 1
 	}
 
-	dist := uint32(b.dist) ^ uint32(b.aliasDistXor)*alias
-	symbol := uint32(b.aliasSymbol)*alias | i*(1-alias)
-	offset := uint32(b.aliasOffset)*alias + pos
+	dist = uint32(b.dist) ^ uint32(b.aliasDistXor)*alias
+	symbol = uint32(b.aliasSymbol)*alias | i*(1-alias)
+	offset = uint32(b.aliasOffset)*alias + pos
+
+	return symbol, dist, offset
+}
+
+func (h *ansHistogram) decode(r *bitReader, state *uint32) uint32 {
+	symbol, dist, offset := h.lookup(*state & 0xfff)
 
 	next := (*state >> logSumProbs) * dist
 	next += offset

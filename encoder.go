@@ -356,7 +356,7 @@ func (f *frame) transformGroup(s *dctScratch, g int) bool {
 	return true
 }
 
-func codedBits(h *histograms, counts [][]uint32, codes [][]prefixCode) int {
+func codedBits(h *histograms, counts [][]uint32, codes *symbolWriter) int {
 	total := 0
 
 	for c, cnt := range counts {
@@ -365,7 +365,14 @@ func codedBits(h *histograms, counts [][]uint32, codes [][]prefixCode) int {
 				continue
 			}
 
-			total += int(n) * (int(codes[c][t].bits) + h.uintConfigs[c].extraBits(uint32(t)))
+			bits := logSumProbs
+			if codes.codes != nil {
+				bits = int(codes.codes[c][t].bits)
+			} else if f := codes.tables[c].info[t].freq; f != 0 {
+				bits = logSumProbs - int(log2Int(uint64(f)))
+			}
+
+			total += int(n) * (bits + h.uintConfigs[c].extraBits(uint32(t)))
 		}
 	}
 
@@ -452,14 +459,15 @@ func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 
 	reserveGroups(sections[2+numLF:], perGroup, codedBits(hist, counts, codes))
 
-	sw := symbolWriter{codes: codes}
+	writers := make([]symbolWriter, nw)
 
 	err = overTasks(nw, numGroups, func(w, g int) error {
 		if !f.transformGroup(&scratch[w], g) {
 			return ErrUnsupported
 		}
 
-		return f.encodeVarDCTGroup(sections[2+numLF+g], g, &scratch[w], hist, &sw, 0)
+		return f.encodeVarDCTGroup(sections[2+numLF+g], g, &scratch[w], hist,
+			codes, &writers[w], 0)
 	})
 	if err != nil {
 		return nil, err

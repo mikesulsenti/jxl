@@ -357,7 +357,7 @@ func TestACGroupRoundTrip(t *testing.T) {
 
 		var bw bitWriter
 
-		sw := symbolWriter{codes: hist.write(&bw, counts)}
+		sw := hist.write(&bw, counts)
 
 		if err := bw.err(); err != nil {
 			t.Fatalf("%v: histograms gave %v", dims, err)
@@ -370,6 +370,8 @@ func TestACGroupRoundTrip(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("%v: writing gave %v", dims, err)
 		}
+
+		sw.flush(&bw)
 
 		if err := bw.err(); err != nil {
 			t.Fatalf("%v: body gave %v", dims, err)
@@ -1029,9 +1031,9 @@ func TestVarDCTBodyRoundTrip(t *testing.T) {
 
 		hist.resize(f.acContexts() + zeroDensityContextLimit - zeroDensityContextCount)
 
-		sw := symbolWriter{codes: codes}
+		sw := codes
 
-		if err := f.encodeVarDCTGroup(&w, 0, s, hist, &sw, 0); err != nil {
+		if err := f.encodeVarDCTGroup(&w, 0, s, hist, sw, &symbolWriter{}, 0); err != nil {
 			t.Fatalf("%v: group gave %v", dims, err)
 		}
 

@@ -282,11 +282,13 @@ func TestHistogramRoundTrip(t *testing.T) {
 						numContexts, clusters, kind, err)
 				}
 
-				sw := symbolWriter{codes: codes}
+				sw := codes
 
 				for _, it := range stream {
 					sw.writeUnsigned(h, &w, it.context, it.value)
 				}
+
+				sw.flush(&w)
 
 				if err := w.err(); err != nil {
 					t.Fatalf("contexts %d clusters %d kind %d: body gave %v",
@@ -343,11 +345,13 @@ func TestSignedRoundTrip(t *testing.T) {
 
 	var w bitWriter
 
-	sw := symbolWriter{codes: h.write(&w, counts)}
+	sw := h.write(&w, counts)
 
 	for _, v := range stream {
 		sw.writeSigned(h, &w, 0, v)
 	}
+
+	sw.flush(&w)
 
 	if err := w.err(); err != nil {
 		t.Fatalf("write gave %v", err)
@@ -553,5 +557,130 @@ func TestClusterContextsBeatsRanking(t *testing.T) {
 	if got >= want*0.75 {
 		t.Fatalf("similarity clustering costs %.0f bits, ranking %.0f, expected a clear win",
 			got, want)
+	}
+}
+
+func TestANSDistributionRoundTrip(t *testing.T) {
+	rng := rand.New(rand.NewPCG(211, 223))
+
+	for kind := range 9 {
+		for _, n := range []int{1, 2, 3, 9, 60, 256} {
+			for range 20 {
+				counts := make([]uint32, n)
+
+				for i := range counts {
+					switch kind {
+					case 0:
+						counts[i] = uint32(rng.IntN(2))
+					case 1:
+						counts[i] = uint32(rng.IntN(1000))
+					case 2:
+						counts[i] = uint32(rng.IntN(1 << 20))
+					default:
+						if rng.IntN(kind) == 0 {
+							counts[i] = uint32(rng.IntN(1 << uint(kind)))
+						}
+					}
+				}
+
+				table, ok := buildANSTable(counts, ansMaxLogAlpha)
+				if !ok {
+					t.Fatalf("kind %d n %d: no table", kind, n)
+				}
+
+				var w bitWriter
+
+				writeANSHistogram(&w, table.dist, table.omit, table.shift)
+
+				if err := w.err(); err != nil {
+					t.Fatalf("kind %d n %d: write gave %v", kind, n, err)
+				}
+
+				r := newBitReader(append(w.bytes(), make([]byte, 16)...))
+
+				var got ansHistogram
+
+				var s ansScratch
+
+				s.init(1, 1<<ansMaxLogAlpha)
+
+				got.read(r, ansMaxLogAlpha, &s)
+
+				if err := r.err(); err != nil {
+					t.Fatalf("kind %d n %d shift %d: read gave %v, counts %v dist %v omit %d",
+						kind, n, table.shift, err, counts, table.dist, table.omit)
+				}
+
+				freq := got.frequencies(1 << ansMaxLogAlpha)
+
+				for i, d := range freq {
+					want := uint16(0)
+					if i < len(table.dist) {
+						want = table.dist[i]
+					}
+
+					if d != want {
+						t.Fatalf("kind %d n %d shift %d: symbol %d has frequency %d, want %d",
+							kind, n, table.shift, i, d, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestANSTiny(t *testing.T) {
+	for _, vals := range [][]uint32{
+		{0}, {0, 0, 1}, {5}, {0, 1, 2}, {3, 3, 3, 4}, {0, 0, 0, 0, 1, 7, 7},
+		{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, {0, 1}, {2, 9},
+	} {
+		counted := countValues(vals)
+
+		h, counts := codeHistograms(singleContext[:], counted, ansMaxLogAlpha, false)
+		if h == nil {
+			t.Fatalf("%v: no ans histogram", vals)
+		}
+
+		var w bitWriter
+
+		sw := h.write(&w, counts)
+
+		if err := w.err(); err != nil {
+			t.Fatalf("%v: header gave %v", vals, err)
+		}
+
+		for _, v := range vals {
+			sw.writeUnsigned(h, &w, 0, v)
+		}
+
+		sw.flush(&w)
+
+		if err := w.err(); err != nil {
+			t.Fatalf("%v: body gave %v", vals, err)
+		}
+
+		r := newBitReader(append(w.bytes(), make([]byte, 16)...))
+
+		var back histograms
+
+		back.read(r, 1, false)
+
+		if err := r.err(); err != nil {
+			t.Fatalf("%v: header read gave %v", vals, err)
+		}
+
+		var sr symbolReader
+
+		sr.init(&back, r, 0)
+
+		for i, v := range vals {
+			if got := sr.readUnsigned(&back, r, 0); got != v {
+				t.Fatalf("%v: item %d read back as %d", vals, i, got)
+			}
+		}
+
+		if err := sr.checkFinalState(&back, r); err != nil {
+			t.Fatalf("%v: final state %v", vals, err)
+		}
 	}
 }

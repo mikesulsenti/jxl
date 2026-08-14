@@ -953,8 +953,8 @@ func TestRateAgainstCjxl(t *testing.T) {
 		}
 	}
 
-	if worst > 1.3 {
-		t.Fatalf("we are %.2fx cjxl above ssimulacra2 80, ratchet is 1.3x", worst)
+	if worst > 1.15 {
+		t.Fatalf("we are %.2fx cjxl above ssimulacra2 80, ratchet is 1.15x", worst)
 	}
 }
 
@@ -976,4 +976,5 @@ func matchedSize(curve []ratePoint, score float64) (float64, bool) {
 
 	return 0, false
 }
+
 

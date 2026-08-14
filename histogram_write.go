@@ -86,7 +86,7 @@ func writeCodedContextMap(w *bitWriter, m []uint8, useMTF bool) {
 	w.bit(false)
 	w.bit(useMTF)
 
-	sw := symbolWriter{codes: h.write(w, counts)}
+	sw := h.write(w, counts)
 
 	if w.err() != nil {
 		return
@@ -95,6 +95,8 @@ func writeCodedContextMap(w *bitWriter, m []uint8, useMTF bool) {
 	for _, v := range values {
 		sw.writeUnsigned(h, w, 0, v)
 	}
+
+	sw.flush(w)
 }
 
 func writeContextMap(w *bitWriter, m []uint8) {
@@ -150,8 +152,20 @@ func writeContextMap(w *bitWriter, m []uint8) {
 	w.append(candidates[best])
 }
 
-func (h *histograms) write(w *bitWriter, counts [][]uint32) [][]prefixCode {
-	if h.lz77.enabled || !h.usePrefix || h.logAlphaSize != huffmanMaxBits {
+func (h *histograms) write(w *bitWriter, counts [][]uint32) *symbolWriter {
+	if h.lz77.enabled {
+		w.setErr(ErrUnsupported)
+
+		return nil
+	}
+
+	if h.usePrefix && h.logAlphaSize != huffmanMaxBits {
+		w.setErr(ErrUnsupported)
+
+		return nil
+	}
+
+	if !h.usePrefix && (h.logAlphaSize < ansMinLogAlpha || h.logAlphaSize > ansMaxLogAlpha) {
 		w.setErr(ErrUnsupported)
 
 		return nil
@@ -187,13 +201,36 @@ func (h *histograms) write(w *bitWriter, counts [][]uint32) [][]prefixCode {
 		writeContextMap(w, h.contextMap)
 	}
 
-	w.bit(true)
+	w.bit(h.usePrefix)
+
+	if !h.usePrefix {
+		w.bits(2, uint64(h.logAlphaSize-ansMinLogAlpha))
+	}
 
 	for i := range h.uintConfigs {
 		h.uintConfigs[i].write(w, h.logAlphaSize)
 	}
 
-	return h.huff.write(w, counts)
+	if h.usePrefix {
+		return &symbolWriter{codes: h.huff.write(w, counts)}
+	}
+
+	tables := make([]*ansTable, len(counts))
+
+	for i, cnt := range counts {
+		t, ok := buildANSTable(cnt, h.logAlphaSize)
+		if !ok {
+			w.setErr(ErrInvalid)
+
+			return nil
+		}
+
+		writeANSHistogram(w, t.dist, t.omit, t.shift)
+
+		tables[i] = t
+	}
+
+	return &symbolWriter{tables: tables}
 }
 
 func clusterContexts(values []valueCounts, limit int) ([]uint8, []valueCounts) {
@@ -383,10 +420,81 @@ func mergeCost(a *valueCounts, b []histEntry, bt uint32) float64 {
 }
 
 func buildHistograms(contextMap []uint8, values []valueCounts) (*histograms, [][]uint32) {
+	prefix, prefixCounts := codeHistograms(contextMap, values, huffmanMaxBits, true)
+	ans, ansCounts := codeHistograms(contextMap, values, ansMaxLogAlpha, false)
+
+	if ans == nil || prefixBits(prefixCounts) <= ansBits(ansCounts) {
+		return prefix, prefixCounts
+	}
+
+	return ans, ansCounts
+}
+
+func prefixBits(counts [][]uint32) float64 {
+	total := 0.0
+
+	for _, cnt := range counts {
+		n, used := uint64(0), 0
+
+		for _, c := range cnt {
+			if c != 0 {
+				n += uint64(c)
+				used++
+			}
+		}
+
+		if n == 0 {
+			continue
+		}
+
+		total += tableCost(used)
+
+		for _, c := range cnt {
+			if c != 0 {
+				total += float64(c) * max(log2Int(n)-log2Int(uint64(c)), 1)
+			}
+		}
+	}
+
+	return total
+}
+
+func ansBits(counts [][]uint32) float64 {
+	total := 0.0
+
+	for _, cnt := range counts {
+		n, used := uint64(0), 0
+
+		for _, c := range cnt {
+			if c != 0 {
+				n += uint64(c)
+				used++
+			}
+		}
+
+		if n == 0 {
+			continue
+		}
+
+		total += tableCost(used)
+
+		for _, c := range cnt {
+			if c != 0 {
+				total += float64(c) * (log2Int(n) - log2Int(uint64(c)))
+			}
+		}
+	}
+
+	return total
+}
+
+func codeHistograms(contextMap []uint8, values []valueCounts, logAlphaSize int,
+	usePrefix bool,
+) (*histograms, [][]uint32) {
 	h := &histograms{
 		contextMap:   contextMap,
-		logAlphaSize: huffmanMaxBits,
-		usePrefix:    true,
+		logAlphaSize: logAlphaSize,
+		usePrefix:    usePrefix,
 		uintConfigs:  make([]hybridUint, len(values)),
 	}
 
@@ -400,13 +508,18 @@ func buildHistograms(contextMap []uint8, values []valueCounts) (*histograms, [][
 	for i := range values {
 		hist = values[i].entries(hist[:0])
 
-		cfg := chooseUintConfig(hist, huffmanMaxBits, 1<<huffmanMaxBits-1, &scratch)
+		cfg := chooseUintConfig(hist, logAlphaSize, 1<<logAlphaSize-1, &scratch)
 		h.uintConfigs[i] = cfg
 
 		maxToken := uint32(0)
 
 		for _, e := range hist {
 			token, _, _ := cfg.encode(e.value)
+
+			if int(token) >= 1<<logAlphaSize {
+				return nil, nil
+			}
+
 			maxToken = max(maxToken, token)
 		}
 
@@ -423,8 +536,28 @@ func buildHistograms(contextMap []uint8, values []valueCounts) (*histograms, [][
 	return h, counts
 }
 
+type ansToken struct {
+	cluster uint16
+	token   uint16
+	nbits   uint8
+	extra   uint32
+}
+
+type bitGroup struct {
+	bits  uint64
+	nbits int
+}
+
 type symbolWriter struct {
-	codes [][]prefixCode
+	codes  [][]prefixCode
+	tables []*ansTable
+	tokens []ansToken
+	groups []bitGroup
+}
+
+func (s *symbolWriter) reset(from *symbolWriter) {
+	s.codes, s.tables = from.codes, from.tables
+	s.tokens, s.groups = s.tokens[:0], s.groups[:0]
 }
 
 func (s *symbolWriter) writeUnsigned(h *histograms, w *bitWriter, context int, v uint32) {
@@ -438,6 +571,22 @@ func (s *symbolWriter) writeSigned(h *histograms, w *bitWriter, context int, v i
 func (s *symbolWriter) writeClustered(h *histograms, w *bitWriter, cluster int, v uint32) {
 	token, nbits, extra := h.uintConfigs[cluster].encode(v)
 
+	if s.tables != nil {
+		if int(token) >= len(s.tables[cluster].info) ||
+			s.tables[cluster].info[token].freq == 0 {
+			w.setErr(ErrInvalid)
+
+			return
+		}
+
+		s.tokens = append(s.tokens, ansToken{
+			cluster: uint16(cluster), token: uint16(token),
+			nbits: uint8(nbits), extra: extra,
+		})
+
+		return
+	}
+
 	if int(token) >= len(s.codes[cluster]) {
 		w.setErr(ErrInvalid)
 
@@ -449,4 +598,48 @@ func (s *symbolWriter) writeClustered(h *histograms, w *bitWriter, cluster int, 
 	if nbits > 0 {
 		w.bits(int(nbits), uint64(extra))
 	}
+}
+
+func (s *symbolWriter) flush(w *bitWriter) {
+	if s.tables == nil {
+		return
+	}
+
+	groups, acc := s.groups[:0], bitGroup{}
+
+	add := func(v uint64, n int) {
+		if n == 0 {
+			return
+		}
+
+		if acc.nbits+n > maxBitsPerRead {
+			groups = append(groups, acc)
+			acc = bitGroup{}
+		}
+
+		acc.bits = acc.bits<<n | v
+		acc.nbits += n
+	}
+
+	state := uint32(ansChecksum)
+
+	for i := len(s.tokens) - 1; i >= 0; i-- {
+		t := s.tokens[i]
+
+		add(uint64(t.extra), int(t.nbits))
+
+		next, word, n := s.tables[t.cluster].put(state, uint32(t.token))
+		state = next
+
+		add(uint64(word), n)
+	}
+
+	w.bits(32, uint64(state))
+	w.bits(acc.nbits, acc.bits)
+
+	for i := len(groups) - 1; i >= 0; i-- {
+		w.bits(groups[i].nbits, groups[i].bits)
+	}
+
+	s.tokens, s.groups = s.tokens[:0], groups[:0]
 }

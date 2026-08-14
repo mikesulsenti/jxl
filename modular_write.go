@@ -137,7 +137,7 @@ func (t *maTree) finish() {
 	t.numProperties = int(maxProperty) + 1
 }
 
-func (t *maTree) write(w *bitWriter, leafValues []valueCounts) [][]prefixCode {
+func (t *maTree) write(w *bitWriter, leafValues []valueCounts) *symbolWriter {
 	if len(t.nodes) == 0 || len(t.nodes)%2 == 0 {
 		w.setErr(ErrInvalid)
 
@@ -184,7 +184,7 @@ func (t *maTree) write(w *bitWriter, leafValues []valueCounts) [][]prefixCode {
 
 	th, counts := buildHistograms(contexts, values)
 
-	sw := symbolWriter{codes: th.write(w, counts)}
+	sw := th.write(w, counts)
 
 	if w.err() != nil {
 		return nil
@@ -208,6 +208,8 @@ func (t *maTree) write(w *bitWriter, leafValues []valueCounts) [][]prefixCode {
 		sw.writeUnsigned(th, w, ctxMultiplierLog, mulLog)
 		sw.writeUnsigned(th, w, ctxMultiplierBits, mulBits)
 	}
+
+	sw.flush(w)
 
 	leaves := make([]uint8, len(leafValues))
 
@@ -377,7 +379,7 @@ func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, str
 		}
 	}
 
-	sw := symbolWriter{codes: tree.write(w, values)}
+	sw := tree.write(w, values)
 
 	if w.err() != nil {
 		return
@@ -396,4 +398,6 @@ func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, str
 			return w.err() == nil
 		})
 	}
+
+	sw.flush(w)
 }
