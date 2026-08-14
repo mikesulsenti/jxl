@@ -1,0 +1,118 @@
+//go:build amd64 && !noasm
+
+#include "textflag.h"
+
+#define KSEED 0
+#define KABS  32
+#define KINF  64
+#define KMIN  96
+#define KUP   128
+#define KDOWN 160
+#define KONE  192
+
+// r = r * (4 - d*r*r*r) * third, with four in Y14 and a third in Y15.
+#define NEWTON(D, R)       \
+	VMULPD D, R, Y12   \
+	VMULPD R, Y12, Y12 \
+	VMULPD R, Y12, Y12 \
+	VSUBPD Y12, Y14, Y12 \
+	VMULPD Y12, R, R   \
+	VMULPD Y15, R, R
+
+// c = d*r*r, then c = (2*c + d/(c*c)) * third, leaving the root in R.
+#define FINISH(D, R)         \
+	VMULPD R, D, Y12     \
+	VMULPD R, Y12, Y12   \
+	VMULPD Y12, Y12, Y13 \
+	VDIVPD Y13, D, Y13   \
+	VADDPD Y12, Y12, Y11 \
+	VADDPD Y13, Y11, Y12 \
+	VMULPD Y15, Y12, R
+
+// func cbrtAVX2(p *float32, n int, k *[7][8]float32)
+TEXT ·cbrtAVX2(SB), NOSPLIT, $0-24
+	MOVQ p+0(FP), SI
+	MOVQ n+8(FP), CX
+	MOVQ k+16(FP), AX
+
+	MOVL         $0xAAAAAAAB, DX
+	MOVQ         DX, X8
+	VPBROADCASTD X8, Y8
+
+	MOVQ         $0x4010000000000000, DX
+	MOVQ         DX, X14
+	VBROADCASTSD X14, Y14
+
+	MOVQ         $0x3FD5555555555555, DX
+	MOVQ         DX, X15
+	VBROADCASTSD X15, Y15
+
+loop:
+	VMOVUPS (SI), Y0
+
+	VANDPS KABS(AX), Y0, Y1
+	VXORPS Y1, Y0, Y2
+
+	VPXOR    Y3, Y3, Y3
+	VPCMPEQD Y3, Y1, Y3
+	VMOVUPS  KINF(AX), Y4
+	VPCMPGTD Y4, Y1, Y5
+	VPCMPEQD Y4, Y1, Y4
+	VPOR     Y5, Y4, Y4
+	VPOR     Y4, Y3, Y3
+
+	VMOVUPS   KMIN(AX), Y4
+	VPCMPGTD  Y1, Y4, Y4
+	VMULPS    KUP(AX), Y1, Y5
+	VBLENDVPS Y4, Y5, Y1, Y1
+
+	VMOVUPS   KDOWN(AX), Y5
+	VMOVUPS   KONE(AX), Y6
+	VBLENDVPS Y4, Y5, Y6, Y5
+
+	VPMULUDQ Y8, Y1, Y9
+	VPSRLQ   $33, Y9, Y9
+	VPSRLQ   $32, Y1, Y10
+	VPMULUDQ Y8, Y10, Y10
+	VPSRLQ   $33, Y10, Y10
+	VPSLLQ   $32, Y10, Y10
+	VPBLENDD $0xAA, Y10, Y9, Y9
+
+	VMOVUPS KSEED(AX), Y10
+	VPSUBD  Y9, Y10, Y9
+
+	VCVTPS2PD X1, Y6
+	VCVTPS2PD X9, Y13
+	NEWTON(Y6, Y13)
+	NEWTON(Y6, Y13)
+	NEWTON(Y6, Y13)
+	NEWTON(Y6, Y13)
+	FINISH(Y6, Y13)
+	VCVTPD2PSY Y13, X6
+
+	VEXTRACTF128 $1, Y1, X7
+	VEXTRACTF128 $1, Y9, X10
+	VCVTPS2PD    X7, Y7
+	VCVTPS2PD    X10, Y13
+	NEWTON(Y7, Y13)
+	NEWTON(Y7, Y13)
+	NEWTON(Y7, Y13)
+	NEWTON(Y7, Y13)
+	FINISH(Y7, Y13)
+	VCVTPD2PSY Y13, X7
+
+	VINSERTF128 $1, X7, Y6, Y6
+
+	VMULPS Y5, Y6, Y6
+	VORPS  Y2, Y6, Y6
+
+	VBLENDVPS Y3, Y0, Y6, Y6
+
+	VMOVUPS Y6, (SI)
+
+	ADDQ $32, SI
+	SUBQ $8, CX
+	JNZ  loop
+
+	VZEROUPPER
+	RET

@@ -4,6 +4,24 @@ package jxl
 
 import "math"
 
+var cbrtConsts = func() (k [7][8]float32) {
+	fill := func(row int, v float32) {
+		for i := range k[row] {
+			k[row][i] = v
+		}
+	}
+
+	fill(0, math.Float32frombits(0x548C2B4B))
+	fill(1, math.Float32frombits(0x7FFFFFFF))
+	fill(2, math.Float32frombits(0x7F800000))
+	fill(3, math.Float32frombits(0x00800000))
+	fill(4, 1<<30)
+	fill(5, 1.0/1024)
+	fill(6, 1)
+
+	return k
+}()
+
 var quantConsts = func() (k [6][8]float32) {
 	fill := func(row int, bits uint32) {
 		for i := range k[row] {
@@ -72,6 +90,7 @@ func dspInit() {
 	useTranspose8 = true
 	useDequant = true
 	useQuant = true
+	useCbrt = true
 	useFDCTCols = true
 	useDequant512 = hasAVX512
 }
@@ -116,6 +135,21 @@ func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int
 	}
 
 	return true
+}
+
+//go:noescape
+func cbrtAVX2(p *float32, n int, k *[7][8]float32)
+
+func cbrtBlock(p []float32) int {
+	n := len(p) &^ 7
+
+	if !useCbrt || n == 0 {
+		return 0
+	}
+
+	cbrtAVX2(&p[0], n, &cbrtConsts)
+
+	return n
 }
 
 //go:noescape

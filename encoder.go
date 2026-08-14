@@ -63,6 +63,7 @@ func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int, quant in
 func (f *frame) fillXYB(fwd *xybForward, rgb [3][]float32, w, h int) {
 	v := f.vardct
 	stride := v.bw * blockDim
+	n := v.bh * blockDim * stride
 
 	for y := range v.bh * blockDim {
 		sy := min(y, h-1)
@@ -70,13 +71,30 @@ func (f *frame) fillXYB(fwd *xybForward, rgb [3][]float32, w, h int) {
 		for x := range stride {
 			sx := min(x, w-1)
 			i := sy*w + sx
+			o := y*stride + x
 
-			cx, cy, cb := fwd.apply(rgb[0][i], rgb[1][i], rgb[2][i])
+			r, g, b := rgb[0][i], rgb[1][i], rgb[2][i]
 
-			v.pixels[0][y*stride+x] = cx
-			v.pixels[1][y*stride+x] = cy
-			v.pixels[2][y*stride+x] = cb
+			v.pixels[0][o] = (fwd.inv[0]*r + fwd.inv[1]*g + fwd.inv[2]*b - fwd.scaledBias[0]) /
+				fwd.intensityScale
+			v.pixels[1][o] = (fwd.inv[3]*r + fwd.inv[4]*g + fwd.inv[5]*b - fwd.scaledBias[1]) /
+				fwd.intensityScale
+			v.pixels[2][o] = (fwd.inv[6]*r + fwd.inv[7]*g + fwd.inv[8]*b - fwd.scaledBias[2]) /
+				fwd.intensityScale
 		}
+	}
+
+	for c := range 3 {
+		cbrtPlane(v.pixels[c][:n])
+	}
+
+	for i := range n {
+		l := v.pixels[0][i] + fwd.biasCbrt[0]
+		m := v.pixels[1][i] + fwd.biasCbrt[1]
+
+		v.pixels[0][i] = (l - m) / 2
+		v.pixels[1][i] = (l + m) / 2
+		v.pixels[2][i] += fwd.biasCbrt[2]
 	}
 }
 

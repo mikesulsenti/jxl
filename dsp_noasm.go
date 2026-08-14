@@ -14,4 +14,6 @@ func quantize(*quantArgs) bool { return false }
 
 func fdctCols8(int, []float32, int, []float32, int) bool { return false }
 
+func cbrtBlock([]float32) int { return 0 }
+
 func transpose8([]float32, int, []float32, int) {}

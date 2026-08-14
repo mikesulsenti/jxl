@@ -3,6 +3,7 @@ package jxl
 import (
 	"math"
 	"math/rand/v2"
+	"sync"
 	"testing"
 )
 
@@ -574,5 +575,57 @@ func TestFDCTColsAsmMatchesGo(t *testing.T) {
 				t.Fatalf("fdct2d %v: coefficient %d is %v, want %v", dims, i, b[i], a[i])
 			}
 		}
+	}
+}
+
+func TestCbrtAsmMatchesGo(t *testing.T) {
+	if !useCbrt {
+		t.Skip("no kernel compiled in")
+	}
+
+	const stride = 16
+
+	var (
+		wg  sync.WaitGroup
+		bad [16]uint64
+	)
+
+	for w := range 16 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			buf := make([]float32, 4096)
+			want := make([]float32, 4096)
+
+			for base := uint64(w) << 28; base < uint64(w+1)<<28; base += 4096 * stride {
+				for i := range buf {
+					buf[i] = math.Float32frombits(uint32(base + uint64(i)*stride))
+					want[i] = cbrt32(buf[i])
+				}
+
+				cbrtBlock(buf)
+
+				for i := range buf {
+					g, x := buf[i], want[i]
+
+					if g != x && !(g != g && x != x) {
+						bad[w]++
+					}
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	total := uint64(0)
+	for _, n := range bad {
+		total += n
+	}
+
+	if total != 0 {
+		t.Fatalf("%d inputs differ between the kernel and Go", total)
 	}
 }

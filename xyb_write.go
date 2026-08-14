@@ -31,12 +31,14 @@ func cbrt32(x float32) float32 {
 	r := float64(math.Float32frombits(0x548C2B4B - b/3))
 	d := float64(x)
 
+	const third = 1.0 / 3
+
 	for range 4 {
-		r = r * (4 - d*r*r*r) / 3
+		r = r * (4 - d*r*r*r) * third
 	}
 
 	c := d * r * r
-	c = (2*c + d/(c*c)) / 3
+	c = (2*c + d/(c*c)) * third
 
 	y := float32(c * scale)
 
@@ -88,6 +90,12 @@ func newXYBForward(p *xybParams) (xybForward, bool) {
 		scaledBias:     p.scaledBias,
 		intensityScale: p.intensityScale,
 	}, true
+}
+
+func cbrtPlane(p []float32) {
+	for i := cbrtBlock(p); i < len(p); i++ {
+		p[i] = cbrt32(p[i])
+	}
 }
 
 func (f *xybForward) apply(r, g, b float32) (float32, float32, float32) {

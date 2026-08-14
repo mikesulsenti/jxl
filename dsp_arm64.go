@@ -141,3 +141,4 @@ func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int
 
 	return true
 }
+func cbrtBlock([]float32) int { return 0 }
