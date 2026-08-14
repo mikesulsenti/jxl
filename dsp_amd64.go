@@ -52,6 +52,7 @@ func dspInit() {
 	useIDCTCols = true
 	useTranspose8 = true
 	useDequant = true
+	useQuant = true
 	useDequant512 = hasAVX512
 }
 
@@ -60,6 +61,19 @@ func idct8Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k 
 
 //go:noescape
 func idct16Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[31][8]float32)
+
+//go:noescape
+func quantizeAVX2(a *quantArgs, k *[6][8]float32)
+
+func quantize(a *quantArgs) bool {
+	if !useQuant {
+		return false
+	}
+
+	quantizeAVX2(a, &quantConsts)
+
+	return true
+}
 
 //go:noescape
 func dequantAVX2(a *dequantArgs)

@@ -55,7 +55,24 @@ func (v *varDCT) quantizeBlock(s *dctScratch, t hfTransform, invGlobalScale floa
 	my := v.dq.matrix(t, 1)
 	mb := v.dq.matrix(t, 2)
 
-	for k := range numCoeffs {
+	k := 0
+
+	if n := numCoeffs &^ 7; n > 0 {
+		a := quantArgs{
+			in:     [3]*float32{&in[0][0], &in[1][0], &in[2][0]},
+			coeffs: [3]*int32{&coeffs[0][offset], &coeffs[1][offset], &coeffs[2][offset]},
+			mat:    [3]*float32{&mx[0], &my[0], &mb[0]},
+			n:      n,
+			p: [9]float32{biases[0], biases[1], biases[2], biases[3],
+				scaledX, scaledY, scaledB, xcc, bcc},
+		}
+
+		if quantize(&a) {
+			k = n
+		}
+	}
+
+	for ; k < numCoeffs; k++ {
 		qy := quantizeBias(1, in[1][k]/(my[k]*scaledY), biases)
 		dy := adjustQuantBias(1, qy, biases) * my[k] * scaledY
 

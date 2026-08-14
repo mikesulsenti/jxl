@@ -1,6 +1,7 @@
 package jxl
 
 import (
+	"math"
 	"math/rand/v2"
 	"testing"
 )
@@ -396,6 +397,111 @@ func TestTransposeAsmMatchesGo(t *testing.T) {
 		for i, v := range want {
 			if got[i] != v {
 				t.Fatalf("%dx%d sample %d: got %v, want %v", rows, cols, i, got[i], v)
+			}
+		}
+	}
+}
+
+func TestQuantizeAsmMatchesGo(t *testing.T) {
+	if !useQuant {
+		t.Skip("no kernel compiled in")
+	}
+
+	r := rand.New(rand.NewPCG(23, 24))
+
+	biasSets := [][4]float32{
+		{0.9453, 0.9299, 0.9501, 0.145},
+		{0.3, 0.62, 0.94, 0.5},
+		{0.001, 1, 0.5, 2},
+		{0, 0, 0, 0},
+	}
+
+	// Exact halves reach the rounding tie only when the matrix and the scale
+	// cancel, which random tables never do.
+	special := []float32{
+		0, 0.5, -0.5, 1.5, -1.5, 2.5, -2.5, 1, -1, 0.49999997, -0.49999997,
+		float32(math.NaN()), float32(math.Inf(1)), float32(math.Inf(-1)),
+		1 << 30, -1 << 30, 16777215.5, -16777215.5,
+	}
+
+	var s dctScratch
+
+	for c := range 3 {
+		s.coeffs[c] = make([]int32, maxCoeffArea)
+		s.block[c] = make([]float32, maxCoeffArea)
+	}
+
+	for _, biases := range biasSets {
+		v := varDCT{biases: biases, xdm: 0.8, bdm: 1.25}
+
+		for _, unit := range []bool{false, true} {
+			for i := range numQuantTables {
+				n := quantSizeX[i] * quantSizeY[i] * blockSize
+				v.dq.tables[i] = make([]float32, 3*n)
+
+				for j := range v.dq.tables[i] {
+					v.dq.tables[i][j] = r.Float32()*4 + 0.01
+
+					if unit {
+						v.dq.tables[i][j] = 1
+					}
+				}
+			}
+
+			for _, tr := range []hfTransform{hfDCT, hfDCT16X16, hfDCT32X32, hfDCT8X16} {
+				cx, cy := tr.blocks()
+				n := cx * cy * blockSize
+
+				for round := range 4 {
+					for c := range 3 {
+						for i := range s.block[c][:n] {
+							switch {
+							case unit:
+								s.block[c][i] = special[r.IntN(len(special))]
+							case r.IntN(8) == 0:
+								s.block[c][i] = special[r.IntN(len(special))]
+							case r.IntN(6) == 0:
+								s.block[c][i] = float32(r.NormFloat64()) * 1e4
+							default:
+								s.block[c][i] = float32(r.NormFloat64()) * 4
+							}
+						}
+					}
+
+					quant := uint32(1 + r.IntN(256))
+					scale := float32(0.7)
+					xcc, bcc := float32(0.31), float32(1.2)
+
+					if unit {
+						quant, scale, xcc, bcc = 1, 1, 0, 0
+					}
+
+					var want [3][]int32
+
+					useQuant = false
+					v.quantizeBlock(&s, tr, scale, quant, xcc, bcc, n, 0)
+					useQuant = true
+
+					for c := range 3 {
+						want[c] = make([]int32, n)
+						copy(want[c], s.coeffs[c][:n])
+					}
+
+					for c := range 3 {
+						clear(s.coeffs[c][:n])
+					}
+
+					v.quantizeBlock(&s, tr, scale, quant, xcc, bcc, n, 0)
+
+					for c := range 3 {
+						for i, x := range want[c] {
+							if s.coeffs[c][i] != x {
+								t.Fatalf("biases %v unit %v transform %d round %d channel %d coefficient %d (in=%v): got %d, want %d",
+									biases, unit, tr, round, c, i, s.block[c][i], s.coeffs[c][i], x)
+							}
+						}
+					}
+				}
 			}
 		}
 	}

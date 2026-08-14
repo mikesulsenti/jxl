@@ -90,3 +90,4 @@ func dequant(a *dequantArgs) bool {
 
 	return true
 }
+func quantize(*quantArgs) bool { return false }
