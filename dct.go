@@ -13,11 +13,19 @@ const (
 	dctSqrt2       = 1.41421356237
 )
 
+var fdctOne = [8]float32{1, 1, 1, 1, 1, 1, 1, 1}
+
 var (
 	dctMultipliers [9][]float32
 	dctResample    [6][]float32
 	idctConsts     [31][8]float32
-	fdctConsts     [8][8]float32
+	fdctConsts     [34][8]float32
+)
+
+const (
+	fdctInv8  = 31
+	fdctInv16 = 32
+	fdctInv32 = 33
 )
 
 func init() {
@@ -55,10 +63,8 @@ func init() {
 		}
 	}
 
-	f := []float32{dctSqrt2}
-	f = append(f, dctMultipliers[2]...)
-	f = append(f, dctMultipliers[3]...)
-	f = append(f, 1.0/blockDim)
+	f := append([]float32{dctSqrt2}, c[1:]...)
+	f = append(f, 1.0/8, 1.0/16, 1.0/32)
 
 	for i, v := range f {
 		for j := range fdctConsts[i] {

@@ -64,14 +64,37 @@ func idct8Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k 
 func idct16Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[31][8]float32)
 
 //go:noescape
-func fdct8Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[8][8]float32)
+func fdct8Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32)
+
+//go:noescape
+func fdct16Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
+
+//go:noescape
+func fdct32Split(src *float32, srcStride int, half *float32, k *[34][8]float32)
+
+//go:noescape
+func fdct32Merge(half *float32, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
 
 func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int) bool {
-	if !useFDCTCols || n != blockDim {
+	if !useFDCTCols {
 		return false
 	}
 
-	fdct8Cols8AVX2(&src[0], srcStride, &dst[0], dstStride, &fdctConsts)
+	switch n {
+	case 32:
+		var half [32 * 8]float32
+
+		fdct32Split(&src[0], srcStride, &half[0], &fdctConsts)
+		fdct16Cols8AVX2(&half[0], 8, &half[0], 8, &fdctConsts, &fdctOne)
+		fdct16Cols8AVX2(&half[16*8], 8, &half[16*8], 8, &fdctConsts, &fdctOne)
+		fdct32Merge(&half[0], &dst[0], dstStride, &fdctConsts, &fdctConsts[fdctInv32])
+	case 8:
+		fdct8Cols8AVX2(&src[0], srcStride, &dst[0], dstStride, &fdctConsts)
+	case 16:
+		fdct16Cols8AVX2(&src[0], srcStride, &dst[0], dstStride, &fdctConsts, &fdctConsts[fdctInv16])
+	default:
+		return false
+	}
 
 	return true
 }

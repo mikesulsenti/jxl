@@ -514,33 +514,36 @@ func TestFDCTColsAsmMatchesGo(t *testing.T) {
 
 	r := rand.New(rand.NewPCG(31, 37))
 
-	for _, m := range []int{8, 16, 24} {
-		for _, stride := range []int{m, m + 8} {
-			src := make([]float32, blockDim*stride)
-			want := make([]float32, blockDim*stride)
-			got := make([]float32, blockDim*stride)
-			tmp := make([]float32, 4*maxCoeffArea)
+	for _, n := range []int{8, 16, 32} {
+		for _, m := range []int{8, 16, 24} {
+			for _, stride := range []int{m, m + 8} {
+				src := make([]float32, n*stride)
+				want := make([]float32, n*stride)
+				got := make([]float32, n*stride)
+				tmp := make([]float32, 8*maxCoeffArea)
 
-			for i := range src {
-				switch r.IntN(8) {
-				case 0:
-					src[i] = 0
-				case 1:
-					src[i] = float32(r.NormFloat64()) * 1e5
-				default:
-					src[i] = float32(r.NormFloat64()) * 100
+				for i := range src {
+					switch r.IntN(8) {
+					case 0:
+						src[i] = 0
+					case 1:
+						src[i] = float32(r.NormFloat64()) * 1e5
+					default:
+						src[i] = float32(r.NormFloat64()) * 100
+					}
 				}
-			}
 
-			useFDCTCols = false
-			fdctColumns(blockDim, m, src, stride, want, stride, tmp)
-			useFDCTCols = true
+				useFDCTCols = false
+				fdctColumns(n, m, src, stride, want, stride, tmp)
+				useFDCTCols = true
 
-			fdctColumns(blockDim, m, src, stride, got, stride, tmp)
+				fdctColumns(n, m, src, stride, got, stride, tmp)
 
-			for i := range want {
-				if got[i] != want[i] {
-					t.Fatalf("m %d stride %d: sample %d is %v, want %v", m, stride, i, got[i], want[i])
+				for i := range want {
+					if got[i] != want[i] {
+						t.Fatalf("n %d m %d stride %d: sample %d is %v, want %v",
+							n, m, stride, i, got[i], want[i])
+					}
 				}
 			}
 		}
