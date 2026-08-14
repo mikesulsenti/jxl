@@ -27,6 +27,7 @@ type decoder struct {
 
 	visible    int
 	nonvisible int
+	preview    bool
 }
 
 func newDecoder(r io.Reader, o Options) (*decoder, error) {
@@ -185,8 +186,47 @@ func (d *decoder) floats() (*Float, error) {
 	return fl, nil
 }
 
+func (d *decoder) skipPreview() error {
+	d.preview = true
+	defer func() { d.preview = false }()
+
+	for {
+		r := newBitReader(d.src.window())
+		r.skip(d.used)
+
+		f, err := d.readFrameHeader(r)
+		if err == nil {
+			end := r.pos()/8 + int(f.toc.offsets[len(f.toc.offsets)-1])
+
+			if d.src.avail() >= end {
+				d.used = end * 8
+				d.src.advance(end)
+				d.used = 0
+
+				return nil
+			}
+
+			err = ErrInvalid
+		}
+
+		if !d.src.more() {
+			if d.src.fail != nil {
+				return d.src.fail
+			}
+
+			return err
+		}
+	}
+}
+
 func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 	m := &d.hdr.meta
+
+	if m.havePreview {
+		if err := d.skipPreview(); err != nil {
+			return nil, nil, 0, err
+		}
+	}
 	channels := m.colorChannels() + len(m.extraChannels)
 	w, h := int(d.hdr.size.xsize), int(d.hdr.size.ysize)
 

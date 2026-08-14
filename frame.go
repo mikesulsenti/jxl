@@ -47,7 +47,12 @@ type rect struct {
 func (d *decoder) readFrameHeader(r *bitReader) (*frame, error) {
 	f := &frame{threads: d.threads}
 
-	f.hdr.read(r, &d.hdr.meta, d.hdr.size.xsize, d.hdr.size.ysize)
+	w, h := d.hdr.size.xsize, d.hdr.size.ysize
+	if d.preview {
+		w, h = d.hdr.meta.preview.xsize, d.hdr.meta.preview.ysize
+	}
+
+	f.hdr.read(r, &d.hdr.meta, w, h)
 
 	if err := r.err(); err != nil {
 		return nil, err
