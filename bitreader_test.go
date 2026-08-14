@@ -257,6 +257,20 @@ func TestBitReaderSplit(t *testing.T) {
 	}
 }
 
+func TestBitReaderSplitTooLarge(t *testing.T) {
+	for _, n := range []int{65, 1 << 20, 1 << 28, 1<<31 - 1} {
+		r := newBitReader(make([]byte, 64))
+
+		if sub := r.split(n); sub == nil {
+			t.Fatalf("n=%d: nil reader", n)
+		}
+
+		if err := r.err(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("n=%d: err = %v, want ErrInvalid", n, err)
+		}
+	}
+}
+
 func TestBitReaderSkip(t *testing.T) {
 	data := make([]byte, 64)
 	for i := range data {

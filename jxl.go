@@ -8,6 +8,7 @@ import (
 	"errors"
 	"image"
 	"io"
+	"math"
 )
 
 // ErrInvalid means the bitstream is malformed. ErrUnsupported means it is
@@ -26,7 +27,7 @@ const DefaultLevel = 5
 
 // DefaultFrameSizeLimit is the frame area, in pixels, accepted when
 // Options.FrameSizeLimit is zero.
-const DefaultFrameSizeLimit = 16384 * 16384
+const DefaultFrameSizeLimit = min(16384*16384, math.MaxInt>>6)
 
 // Options configure a decode.
 type Options struct {

@@ -136,16 +136,18 @@ func (r *bitReader) zeroPad() {
 func (r *bitReader) split(n int) *bitReader {
 	r.zeroPad()
 
+	if n < 0 || n > r.left()/8 {
+		r.setErr(ErrInvalid)
+
+		return &bitReader{fail: ErrInvalid}
+	}
+
 	sub := &bitReader{data: r.data, buf: r.buf, nbits: r.nbits, avail: n * 8}
 
 	r.skip(n * 8)
 
 	if bytesInBuf := sub.nbits / 8; n > bytesInBuf {
-		if want := n - bytesInBuf; want <= len(sub.data) {
-			sub.data = sub.data[:want]
-		} else {
-			sub.setErr(ErrInvalid)
-		}
+		sub.data = sub.data[:n-bytesInBuf]
 	} else {
 		sub.nbits = n * 8
 		sub.buf &= 1<<(n*8) - 1
