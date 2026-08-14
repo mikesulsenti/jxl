@@ -30,6 +30,7 @@ func dspInit() {
 	useTranspose8 = true
 	useDequant = true
 	useQuant = true
+	useFDCTCols = true
 }
 
 func idct8x8([]float32) bool { return false }
@@ -105,4 +106,38 @@ func quantize(a *quantArgs) bool {
 	return true
 }
 
-func fdctCols8(int, []float32, int, []float32, int) bool { return false }
+//go:noescape
+func fdct8Cols4NEON(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
+
+//go:noescape
+func fdct16Cols4NEON(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
+
+//go:noescape
+func fdct32SplitNEON(src *float32, srcStride int, half *float32, k *[34][8]float32)
+
+//go:noescape
+func fdct32MergeNEON(half *float32, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
+
+func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int) bool {
+	if !useFDCTCols || (n != 8 && n != 16 && n != 32) {
+		return false
+	}
+
+	for _, off := range [2]int{0, 4} {
+		switch n {
+		case 8:
+			fdct8Cols4NEON(&src[off], srcStride, &dst[off], dstStride, &fdctConsts, &fdctConsts[fdctInv8])
+		case 16:
+			fdct16Cols4NEON(&src[off], srcStride, &dst[off], dstStride, &fdctConsts, &fdctConsts[fdctInv16])
+		case 32:
+			var half [32 * 4]float32
+
+			fdct32SplitNEON(&src[off], srcStride, &half[0], &fdctConsts)
+			fdct16Cols4NEON(&half[0], 4, &half[0], 4, &fdctConsts, &fdctOne)
+			fdct16Cols4NEON(&half[16*4], 4, &half[16*4], 4, &fdctConsts, &fdctOne)
+			fdct32MergeNEON(&half[0], &dst[off], dstStride, &fdctConsts, &fdctConsts[fdctInv32])
+		}
+	}
+
+	return true
+}
