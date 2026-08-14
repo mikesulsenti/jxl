@@ -29,6 +29,7 @@ func dspInit() {
 	useIDCTCols = true
 	useTranspose8 = true
 	useDequant = true
+	useQuant = true
 }
 
 func idct8x8([]float32) bool { return false }
@@ -90,6 +91,18 @@ func dequant(a *dequantArgs) bool {
 
 	return true
 }
-func quantize(*quantArgs) bool { return false }
+
+//go:noescape
+func quantizeNEON(a *quantArgs)
+
+func quantize(a *quantArgs) bool {
+	if !useQuant {
+		return false
+	}
+
+	quantizeNEON(a)
+
+	return true
+}
 
 func fdctCols8(int, []float32, int, []float32, int) bool { return false }
