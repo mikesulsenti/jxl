@@ -1,6 +1,9 @@
 package jxl
 
-import "math"
+import (
+	"math"
+	"slices"
+)
 
 const (
 	aqSGmul     = 226.77216153508914
@@ -12,6 +15,17 @@ const (
 
 	aqGammaOffset = 0.019
 	aqDiffLimit   = 0.2
+
+	aqACQuant     = 0.765
+	aqDampenStart = 2
+	aqDampenEnd   = 14
+
+	aqDCQuant    = 1.095924047623553
+	aqDCQuantPow = 0.83
+	aqDCMul      = 0.3
+
+	quantFieldTarget = 5
+	globalScaleNum   = 4096
 )
 
 func gammaRatioParts(v float32) (float32, float32) {
@@ -121,11 +135,27 @@ func (f *frame) diffPrecompute(pre []float32, pw, ph int) {
 	}
 }
 
-func (f *frame) fuzzyErosion(pre []float32, pw, ph int, field []float32) {
+func (f *frame) fuzzyErosion(distance float32, pre []float32, pw, ph int, field []float32) {
 	v := f.vardct
 
-	mul := [4]float32{0.125, 0.1, 0.09, 0.06}
-	norm := float32(0.29959705784054957) / (mul[0] + mul[1] + mul[2] + mul[3])
+	base := [4]float32{0.125, 0.1, 0.09, 0.06}
+	add := [4]float32{0, -0.1, -0.09, -0.06}
+
+	ramp := float32(0)
+	if distance < 2 {
+		ramp = (2 - distance) * 0.5
+	}
+
+	var mul [4]float32
+
+	sum := float32(0)
+
+	for i := range mul {
+		mul[i] = base[i] + ramp*add[i]
+		sum += mul[i]
+	}
+
+	norm := float32(0.29959705784054957) / sum
 
 	for i := range mul {
 		mul[i] *= norm
@@ -248,7 +278,7 @@ func (f *frame) blueModulation(x, y int, out float32) float32 {
 	return sum*0.90590804735610064 + out
 }
 
-func (f *frame) adaptiveQuantField() []float32 {
+func (f *frame) adaptiveQuantField(distance, strength float32) []float32 {
 	v := f.vardct
 	pw, ph := v.bw*2, v.bh*2
 
@@ -256,7 +286,17 @@ func (f *frame) adaptiveQuantField() []float32 {
 	field := make([]float32, v.bw*v.bh)
 
 	f.diffPrecompute(pre, pw, ph)
-	f.fuzzyErosion(pre, pw, ph, field)
+	f.fuzzyErosion(distance, pre, pw, ph, field)
+
+	scale := aqACQuant / distance
+	dampen := float32(1)
+
+	if distance >= aqDampenStart {
+		dampen = max(1-(distance-aqDampenStart)/(aqDampenEnd-aqDampenStart), 0)
+	}
+
+	mul := scale * dampen
+	add := (1 - dampen) * 0.48 * scale
 
 	for by := range v.bh {
 		for bx := range v.bw {
@@ -267,7 +307,7 @@ func (f *frame) adaptiveQuantField() []float32 {
 
 			out := min(f.hfModulation(x, y, maskVal), f.blueModulation(x, y, maskVal))
 
-			field[pos] = expf(out)
+			field[pos] = expf(out*strength)*mul + add
 		}
 	}
 
@@ -308,31 +348,49 @@ func (f *frame) adjustQuantField() {
 	}
 }
 
-func (f *frame) applyAdaptiveQuant(quant int32, strength float32) {
+func initialQuantDC(distance float32) float32 {
+	dc := max(0.5*distance, min(distance,
+		aqDCMul*powf(distance/aqDCMul, aqDCQuantPow)))
+
+	return min(aqDCQuant/dc, 50)
+}
+
+func medianOf(v []float32) float32 {
+	s := make([]float32, len(v))
+	copy(s, v)
+	slices.Sort(s)
+
+	return s[len(s)/2]
+}
+
+func (f *frame) setQuantField(distance, strength float32) {
 	v := f.vardct
-	field := f.adaptiveQuantField()
+	field := f.adaptiveQuantField(distance, strength)
 
-	if strength != 1 {
-		for i := range field {
-			field[i] = powf(field[i], strength)
-		}
-	}
+	median := medianOf(field)
 
-	total := float64(0)
-
-	for _, s := range field {
-		total += float64(s)
-	}
-
-	if total <= 0 {
-		return
-	}
-
-	mean := float32(total / float64(len(field)))
+	dev := make([]float32, len(field))
 
 	for i, s := range field {
-		q := int32(math.Round(float64(float32(quant) * s / mean)))
+		dev[i] = absf(s - median)
+	}
 
-		v.rawQuant[i] = min(max(q, 1), maxRawQuant)
+	scale := float32(globalScaleDenom) * (median - medianOf(dev)) / quantFieldTarget
+	quantDC := initialQuantDC(distance)
+
+	gs := min(max(int32(scale), 1), 1<<15)
+
+	if dc := int32(quantDC * globalScaleNum * 1.6); gs > dc {
+		gs = max(dc, 1)
+	}
+
+	v.quant.globalScale = uint32(gs)
+
+	inv := float32(globalScaleDenom) / float32(gs)
+
+	v.quant.quantLF = uint32(min(quantDC*inv+0.5, 1<<16))
+
+	for i, s := range field {
+		v.rawQuant[i] = min(max(int32(s*inv+0.5), 1), maxRawQuant)
 	}
 }

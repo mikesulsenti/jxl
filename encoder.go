@@ -14,7 +14,7 @@ func encodeFilter() restorationFilter {
 	return f
 }
 
-func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int, quant int32) (*frame, error) {
+func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int) (*frame, error) {
 	f := &frame{}
 
 	f.hdr.width, f.hdr.height = uint32(w), uint32(h)
@@ -40,7 +40,6 @@ func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int, quant in
 	v.dq.tables = libraryTables
 	v.bctx = blockContextMap{contextMap: defaultBlockContextMap, numLFContexts: 1, numContexts: 15}
 	v.cmap = defaultColorCorrelation()
-	v.quant = quantizerParams{globalScale: 4096, quantLF: 16}
 	v.numHistograms = 1
 	v.xdm = powf(1/1.25, float32(f.hdr.xQMScale)-2)
 	v.bdm = powf(1/1.25, float32(f.hdr.bQMScale)-2)
@@ -51,10 +50,6 @@ func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int, quant in
 		for c := range 3 {
 			v.passes[0].orders[3*o+c] = naturalOrders[o]
 		}
-	}
-
-	for i := range v.rawQuant {
-		v.rawQuant[i] = quant
 	}
 
 	return f, nil
@@ -495,9 +490,8 @@ func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 }
 
 type encodeParams struct {
-	quant    int32
+	distance float32
 	threads  int
-	adaptive bool
 	strength float32
 }
 
@@ -512,7 +506,7 @@ func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) 
 	head.meta = defaultImageMetadata()
 	head.transform = defaultCustomTransformData()
 
-	f, err := newEncodeFrame(&head.meta, &head.transform, w, h, p.quant)
+	f, err := newEncodeFrame(&head.meta, &head.transform, w, h)
 	if err != nil {
 		return nil, err
 	}
@@ -525,10 +519,7 @@ func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) 
 	}
 
 	f.fillXYB(&fwd, src, w, h)
-
-	if p.adaptive {
-		f.applyAdaptiveQuant(p.quant, p.strength)
-	}
+	f.setQuantField(p.distance, p.strength)
 
 	scratch := make([]dctScratch, min(numThreads(p.threads), f.hdr.numGroups()))
 
@@ -537,10 +528,7 @@ func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) 
 	}
 
 	f.chooseTransforms(scratch)
-
-	if p.adaptive {
-		f.adjustQuantField()
-	}
+	f.adjustQuantField()
 
 	body, err := f.encodeSections(scratch)
 	if err != nil {
@@ -585,10 +573,14 @@ func encodeOptions(opts []EncodeOptions) EncodeOptions {
 	return o
 }
 
-func qualityToQuant(q int) int32 {
-	q = min(max(q, 1), 100)
+func qualityToDistance(q int) float32 {
+	f := float32(min(max(q, 1), 100))
 
-	return int32(min(max(int(powf(float32(q)/100, 3)*255)+1, 1), maxRawQuant))
+	if f >= 30 {
+		return 0.1 + (100-f)*0.09
+	}
+
+	return 53.0/3000*f*f - 23.0/20*f + 25
 }
 
 var srgb8Linear = func() (t [256]float32) {
@@ -682,9 +674,8 @@ func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 	}
 
 	data, err := encodeVarDCTImage(imageRows(m), width, height, encodeParams{
-		quant:    qualityToQuant(o.Quality),
+		distance: qualityToDistance(o.Quality),
 		threads:  o.Threads,
-		adaptive: true,
 		strength: adaptiveQuantStrength,
 	})
 	if err != nil {

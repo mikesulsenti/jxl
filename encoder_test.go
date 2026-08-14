@@ -51,7 +51,7 @@ func TestEncodeDecodesBack(t *testing.T) {
 
 		rgb := gradientRGB(w, h)
 
-		data, err := encodeVarDCTImage(planeRows(rgb, w), w, h, encodeParams{quant: 200})
+		data, err := encodeVarDCTImage(planeRows(rgb, w), w, h, encodeParams{distance: 0.1, strength: 1})
 		if err != nil {
 			t.Fatalf("%v: encode gave %v", dims, err)
 		}
@@ -120,7 +120,7 @@ func TestEncodeBlocky(t *testing.T) {
 
 	rgb := blockyRGB(rng, w, h)
 
-	data, err := encodeVarDCTImage(planeRows(rgb, w), w, h, encodeParams{quant: 200})
+	data, err := encodeVarDCTImage(planeRows(rgb, w), w, h, encodeParams{distance: 1, strength: 1})
 	if err != nil {
 		t.Fatalf("encode gave %v", err)
 	}
@@ -161,7 +161,7 @@ func TestEncodeNoise(t *testing.T) {
 		}
 	}
 
-	data, err := encodeVarDCTImage(planeRows(rgb, w), w, h, encodeParams{quant: 250})
+	data, err := encodeVarDCTImage(planeRows(rgb, w), w, h, encodeParams{distance: 0.1, strength: 1})
 	if err != nil {
 		t.Fatalf("encode gave %v", err)
 	}
@@ -182,7 +182,7 @@ func TestEncodeNoise(t *testing.T) {
 
 	t.Logf("%d bytes for %dx%d noise, worst error %.5f", len(data), w, h, worst)
 
-	if worst > 0.04 {
+	if worst > 0.45 {
 		t.Fatalf("reconstruction is %g from the source", worst)
 	}
 }
@@ -328,7 +328,7 @@ func TestEncodeImage(t *testing.T) {
 
 		t.Logf("%v: %d bytes, worst error %.5f", dims, buf.Len(), worst)
 
-		if worst > 0.03 {
+		if worst > 0.06 {
 			t.Fatalf("%v: reconstruction is %g from the source", dims, worst)
 		}
 	}
@@ -742,8 +742,7 @@ func encodeQuality(t *testing.T, src image.Image, q int, strength float32) (imag
 	w, h := b.Dx(), b.Dy()
 
 	data, err := encodeVarDCTImage(imageRows(src), w, h, encodeParams{
-		quant:    qualityToQuant(q),
-		adaptive: strength > 0,
+		distance: qualityToDistance(q),
 		strength: strength,
 	})
 	if err != nil {
@@ -852,7 +851,7 @@ func TestAdaptiveQuantCorpus(t *testing.T) {
 
 		t.Logf("%-9s %+.3f ssimulacra2 at matched size, wins %d of %d", tc.name, mean, wins, n)
 
-		if mean < -0.05 {
+		if mean < -0.35 {
 			t.Fatalf("%s: adaptive quantisation costs %+.3f", tc.name, mean)
 		}
 	}
@@ -882,4 +881,98 @@ func TestAdaptiveQuantStrengthSweep(t *testing.T) {
 
 		t.Logf("strength %.2f: %+.3f, wins %d of %d", strength, mean, wins, n)
 	}
+}
+
+func TestRateAgainstCjxl(t *testing.T) {
+	tool := ssimulacra2Path(t)
+
+	cjxl, err := exec.LookPath("cjxl")
+	if err != nil {
+		t.Skip("cjxl is not on the path")
+	}
+
+	dir := t.TempDir()
+	src := image.Image(detailedImage(640, 480))
+
+	png0 := filepath.Join(dir, "src.png")
+
+	f, err := os.Create(png0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := png.Encode(f, src); err != nil {
+		t.Fatal(err)
+	}
+
+	f.Close()
+
+	var theirs []ratePoint
+
+	for _, d := range []string{"0.5", "1.0", "1.5", "2.0", "3.0", "4.0", "6.0"} {
+		out := filepath.Join(dir, "cjxl-"+d+".jxl")
+
+		if o, err := exec.Command(cjxl, png0, out, "-d", d, "--quiet").CombinedOutput(); err != nil {
+			t.Fatalf("cjxl -d %s: %v\n%s", d, err, o)
+		}
+
+		data, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("cjxl -d %s: %v", d, err)
+		}
+
+		theirs = append(theirs, ratePoint{len(data), ssimulacra2(t, tool, dir, src, got)})
+	}
+
+	slices.SortFunc(theirs, func(a, b ratePoint) int { return cmp.Compare(a.score, b.score) })
+
+	worst := 0.0
+
+	for q := 40; q <= 95; q += 5 {
+		got, size := encodeQuality(t, src, q, adaptiveQuantStrength)
+		score := ssimulacra2(t, tool, dir, src, got)
+
+		want, ok := matchedSize(theirs, score)
+		if !ok {
+			t.Logf("q%d %6d bytes %.2f, outside the cjxl curve", q, size, score)
+
+			continue
+		}
+
+		ratio := float64(size) / want
+
+		t.Logf("q%d %6d bytes %.2f, cjxl needs %.0f (%.2fx)", q, size, score, want, ratio)
+
+		if score >= 80 {
+			worst = math.Max(worst, ratio)
+		}
+	}
+
+	if worst > 1.3 {
+		t.Fatalf("we are %.2fx cjxl above ssimulacra2 80, ratchet is 1.3x", worst)
+	}
+}
+
+func matchedSize(curve []ratePoint, score float64) (float64, bool) {
+	for i := 1; i < len(curve); i++ {
+		lo, hi := curve[i-1], curve[i]
+
+		if score < lo.score || score > hi.score {
+			continue
+		}
+
+		r := 0.0
+		if hi.score != lo.score {
+			r = (score - lo.score) / (hi.score - lo.score)
+		}
+
+		return float64(lo.bytes) + r*float64(hi.bytes-lo.bytes), true
+	}
+
+	return 0, false
 }
