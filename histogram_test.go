@@ -464,7 +464,7 @@ func clusterCost(m []uint8, merged []valueCounts) float64 {
 
 		hist = merged[i].entries(hist[:0])
 
-		cost := xLogX(uint64(merged[i].total))
+		cost := xLogX(uint64(merged[i].total)) + tableCost(len(hist))
 
 		for _, e := range hist {
 			cost -= xLogX(uint64(e.count))
@@ -534,8 +534,8 @@ func TestClusterContextsBeatsRanking(t *testing.T) {
 
 	m, merged := clusterContexts(values, 8)
 
-	if len(merged) != 8 {
-		t.Fatalf("got %d clusters, want 8", len(merged))
+	if len(merged) > 8 {
+		t.Fatalf("got %d clusters, want at most 8", len(merged))
 	}
 
 	for i := range values {

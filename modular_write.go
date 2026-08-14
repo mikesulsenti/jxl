@@ -45,6 +45,78 @@ func splitMultiplier(m uint32) (mulLog, mulBits uint32, ok bool) {
 	return mulLog, m>>mulLog - 1, true
 }
 
+type treeSpec struct {
+	property    int32
+	val         int32
+	predictor   uint8
+	offset      int32
+	mul         uint32
+	left, right *treeSpec
+}
+
+func serializeTree(root *treeSpec) []treeNode {
+	var nodes []treeNode
+
+	queue := []*treeSpec{root}
+	leafID := uint32(0)
+
+	for len(queue) > 0 {
+		s := queue[0]
+		queue = queue[1:]
+
+		if s.property < 0 {
+			nodes = append(nodes, treeNode{
+				property: -1 - int32(s.predictor), val: s.offset, child: s.mul, id: leafID,
+			})
+			leafID++
+
+			continue
+		}
+
+		nodes = append(nodes, treeNode{
+			property: s.property, val: s.val, child: uint32(len(nodes) + len(queue) + 1),
+		})
+
+		queue = append(queue, s.left, s.right)
+	}
+
+	return nodes
+}
+
+func predictorLeaf(p uint8) *treeSpec {
+	return &treeSpec{property: -1, predictor: p, mul: 1}
+}
+
+const gradientProperty = 14
+
+var gradientThresholds = [2]int32{-2, 1}
+
+func activityLeaf(p uint8) *treeSpec {
+	spec := predictorLeaf(p)
+
+	for i := len(gradientThresholds) - 1; i >= 0; i-- {
+		spec = &treeSpec{
+			property: gradientProperty, val: gradientThresholds[i],
+			left: spec, right: predictorLeaf(p),
+		}
+	}
+
+	return spec
+}
+
+func channelTree(channels int, p uint8) *maTree {
+	spec := activityLeaf(p)
+
+	for c := channels - 2; c >= 0; c-- {
+		spec = &treeSpec{property: 0, val: int32(c), left: spec, right: activityLeaf(p)}
+	}
+
+	t := &maTree{nodes: serializeTree(spec)}
+	t.finish()
+
+	return t
+}
+
 func (t *maTree) finish() {
 	maxProperty := int32(0)
 	t.usesWP = false

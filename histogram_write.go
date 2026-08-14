@@ -228,19 +228,19 @@ func clusterContexts(values []valueCounts, limit int) ([]uint8, []valueCounts) {
 		src := &values[c.index]
 		hist = src.entries(hist[:0])
 
-		if len(merged) < clusters {
-			merged = append(merged, src.clone())
-			m[c.index] = uint8(len(merged) - 1)
-
-			continue
-		}
-
 		best, bestCost := 0, math.Inf(1)
 
 		for i := range merged {
 			if cost := mergeCost(&merged[i], hist, src.total); cost < bestCost {
 				best, bestCost = i, cost
 			}
+		}
+
+		if len(merged) < clusters && bestCost > tableCost(len(hist)) {
+			merged = append(merged, src.clone())
+			m[c.index] = uint8(len(merged) - 1)
+
+			continue
 		}
 
 		merged[best].merge(src)
@@ -252,6 +252,12 @@ func clusterContexts(values []valueCounts, limit int) ([]uint8, []valueCounts) {
 
 type histEntry struct {
 	value, count uint32
+}
+
+const uintConfigBits = 15
+
+func tableCost(distinct int) float64 {
+	return tableBitsPerSymbol*float64(distinct) + uintConfigBits
 }
 
 const denseValueCount = 16

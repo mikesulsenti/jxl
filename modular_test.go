@@ -5,44 +5,6 @@ import (
 	"testing"
 )
 
-type treeSpec struct {
-	property    int32
-	val         int32
-	predictor   uint8
-	offset      int32
-	mul         uint32
-	left, right *treeSpec
-}
-
-func serializeTree(root *treeSpec) []treeNode {
-	var nodes []treeNode
-
-	queue := []*treeSpec{root}
-	leafID := uint32(0)
-
-	for len(queue) > 0 {
-		s := queue[0]
-		queue = queue[1:]
-
-		if s.property < 0 {
-			nodes = append(nodes, treeNode{
-				property: -1 - int32(s.predictor), val: s.offset, child: s.mul, id: leafID,
-			})
-			leafID++
-
-			continue
-		}
-
-		nodes = append(nodes, treeNode{
-			property: s.property, val: s.val, child: uint32(len(nodes) + len(queue) + 1),
-		})
-
-		queue = append(queue, s.left, s.right)
-	}
-
-	return nodes
-}
-
 func randomLeaf(rng *rand.Rand, allowWP bool) *treeSpec {
 	p := uint8(rng.IntN(numPredictors))
 

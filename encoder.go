@@ -432,13 +432,14 @@ func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 	}
 
 	hdr := groupHeader{wp: defaultWeightedHeader()}
-	tree := &maTree{nodes: []treeNode{{property: -1 - predGradient, child: 1}}}
+	lfTree := channelTree(3, predGradient)
+	metaTree := channelTree(4, predGradient)
 
 	f.encodeLFGlobal(sections[0])
 
 	for g := range numLF {
-		f.encodeVarDCTLF(sections[1+g], g, &hdr, tree)
-		f.encodeHFMetadata(sections[1+g], g, &hdr, tree)
+		f.encodeVarDCTLF(sections[1+g], g, &hdr, lfTree)
+		f.encodeHFMetadata(sections[1+g], g, &hdr, metaTree)
 	}
 
 	codes := f.encodeHFGlobal(sections[1+numLF], hist, counts)
