@@ -1,7 +1,5 @@
 package jxl
 
-import "math"
-
 var epf0Asm func(dst, src *[3]*float32, stride int, sigma *float32, sigmaStride int,
 	k *[6][8]float32, y, x0, x1 int)
 
@@ -38,23 +36,6 @@ type dequantArgs struct {
 	n      int
 	p      [9]float32
 }
-
-var quantConsts = func() (k [6][8]float32) {
-	fill := func(row int, bits uint32) {
-		for i := range k[row] {
-			k[row][i] = math.Float32frombits(bits)
-		}
-	}
-
-	fill(0, 0x3F000000)
-	fill(1, 0x4E800000)
-	fill(2, 0x7FFFFFFF)
-	fill(3, 0x00000001)
-	fill(4, 0xCE800000)
-	fill(5, 0xBF000000)
-
-	return k
-}()
 
 type quantArgs struct {
 	in     [3]*float32

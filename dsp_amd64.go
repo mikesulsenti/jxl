@@ -2,6 +2,25 @@
 
 package jxl
 
+import "math"
+
+var quantConsts = func() (k [6][8]float32) {
+	fill := func(row int, bits uint32) {
+		for i := range k[row] {
+			k[row][i] = math.Float32frombits(bits)
+		}
+	}
+
+	fill(0, 0x3F000000)
+	fill(1, 0x4E800000)
+	fill(2, 0x7FFFFFFF)
+	fill(3, 0x00000001)
+	fill(4, 0xCE800000)
+	fill(5, 0xBF000000)
+
+	return k
+}()
+
 var hasAVX2 = cpuidAVX2()
 
 var hasAVX512 = cpuidAVX512()
@@ -64,16 +83,16 @@ func idct8Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k 
 func idct16Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[31][8]float32)
 
 //go:noescape
-func fdct8Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32)
+func fdct8Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[35][8]float32)
 
 //go:noescape
-func fdct16Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
+func fdct16Cols8AVX2(src *float32, srcStride int, dst *float32, dstStride int, k *[35][8]float32, scale *[8]float32)
 
 //go:noescape
-func fdct32Split(src *float32, srcStride int, half *float32, k *[34][8]float32)
+func fdct32Split(src *float32, srcStride int, half *float32, k *[35][8]float32)
 
 //go:noescape
-func fdct32Merge(half *float32, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
+func fdct32Merge(half *float32, dst *float32, dstStride int, k *[35][8]float32, scale *[8]float32)
 
 func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int) bool {
 	if !useFDCTCols {
@@ -85,8 +104,8 @@ func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int
 		var half [32 * 8]float32
 
 		fdct32Split(&src[0], srcStride, &half[0], &fdctConsts)
-		fdct16Cols8AVX2(&half[0], 8, &half[0], 8, &fdctConsts, &fdctOne)
-		fdct16Cols8AVX2(&half[16*8], 8, &half[16*8], 8, &fdctConsts, &fdctOne)
+		fdct16Cols8AVX2(&half[0], 8, &half[0], 8, &fdctConsts, &fdctConsts[fdctOne])
+		fdct16Cols8AVX2(&half[16*8], 8, &half[16*8], 8, &fdctConsts, &fdctConsts[fdctOne])
 		fdct32Merge(&half[0], &dst[0], dstStride, &fdctConsts, &fdctConsts[fdctInv32])
 	case 8:
 		fdct8Cols8AVX2(&src[0], srcStride, &dst[0], dstStride, &fdctConsts)

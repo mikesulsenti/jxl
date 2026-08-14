@@ -107,16 +107,16 @@ func quantize(a *quantArgs) bool {
 }
 
 //go:noescape
-func fdct8Cols4NEON(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
+func fdct8Cols4NEON(src *float32, srcStride int, dst *float32, dstStride int, k *[35][8]float32, scale *[8]float32)
 
 //go:noescape
-func fdct16Cols4NEON(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
+func fdct16Cols4NEON(src *float32, srcStride int, dst *float32, dstStride int, k *[35][8]float32, scale *[8]float32)
 
 //go:noescape
-func fdct32SplitNEON(src *float32, srcStride int, half *float32, k *[34][8]float32)
+func fdct32SplitNEON(src *float32, srcStride int, half *float32, k *[35][8]float32)
 
 //go:noescape
-func fdct32MergeNEON(half *float32, dst *float32, dstStride int, k *[34][8]float32, scale *[8]float32)
+func fdct32MergeNEON(half *float32, dst *float32, dstStride int, k *[35][8]float32, scale *[8]float32)
 
 func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int) bool {
 	if !useFDCTCols || (n != 8 && n != 16 && n != 32) {
@@ -133,8 +133,8 @@ func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int
 			var half [32 * 4]float32
 
 			fdct32SplitNEON(&src[off], srcStride, &half[0], &fdctConsts)
-			fdct16Cols4NEON(&half[0], 4, &half[0], 4, &fdctConsts, &fdctOne)
-			fdct16Cols4NEON(&half[16*4], 4, &half[16*4], 4, &fdctConsts, &fdctOne)
+			fdct16Cols4NEON(&half[0], 4, &half[0], 4, &fdctConsts, &fdctConsts[fdctOne])
+			fdct16Cols4NEON(&half[16*4], 4, &half[16*4], 4, &fdctConsts, &fdctConsts[fdctOne])
 			fdct32MergeNEON(&half[0], &dst[off], dstStride, &fdctConsts, &fdctConsts[fdctInv32])
 		}
 	}

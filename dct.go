@@ -13,19 +13,21 @@ const (
 	dctSqrt2       = 1.41421356237
 )
 
-var fdctOne = [8]float32{1, 1, 1, 1, 1, 1, 1, 1}
-
 var (
 	dctMultipliers [9][]float32
 	dctResample    [6][]float32
 	idctConsts     [31][8]float32
-	fdctConsts     [34][8]float32
+	fdctConsts     [35][8]float32
 )
 
+// The forward kernels index fdctConsts, which repeats idctConsts and appends
+// the scales dct1d's callers apply: 1/n, and one for a pass that must not scale
+// because it is a sub-step of a larger transform.
 const (
 	fdctInv8  = 31
 	fdctInv16 = 32
 	fdctInv32 = 33
+	fdctOne   = 34
 )
 
 func init() {
@@ -63,12 +65,11 @@ func init() {
 		}
 	}
 
-	f := append([]float32{dctSqrt2}, c[1:]...)
-	f = append(f, 1.0/8, 1.0/16, 1.0/32)
+	copy(fdctConsts[:len(idctConsts)], idctConsts[:])
 
-	for i, v := range f {
-		for j := range fdctConsts[i] {
-			fdctConsts[i][j] = v
+	for i, v := range [4]float32{1.0 / 8, 1.0 / 16, 1.0 / 32, 1} {
+		for j := range fdctConsts[fdctInv8+i] {
+			fdctConsts[fdctInv8+i][j] = v
 		}
 	}
 }

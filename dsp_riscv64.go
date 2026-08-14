@@ -107,16 +107,16 @@ func quantize(a *quantArgs) bool {
 }
 
 //go:noescape
-func fdct8ColsRVV(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *float32, n int)
+func fdct8ColsRVV(src *float32, srcStride int, dst *float32, dstStride int, k *[35][8]float32, scale *float32, n int)
 
 //go:noescape
-func fdct16ColsRVV(src *float32, srcStride int, dst *float32, dstStride int, k *[34][8]float32, scale *float32, n int, tmp *float32)
+func fdct16ColsRVV(src *float32, srcStride int, dst *float32, dstStride int, k *[35][8]float32, scale *float32, n int, tmp *float32)
 
 //go:noescape
-func fdct32SplitRVV(src *float32, srcStride int, half *float32, k *[34][8]float32, n int)
+func fdct32SplitRVV(src *float32, srcStride int, half *float32, k *[35][8]float32, n int)
 
 //go:noescape
-func fdct32MergeRVV(half *float32, dst *float32, dstStride int, k *[34][8]float32, scale *float32, n int)
+func fdct32MergeRVV(half *float32, dst *float32, dstStride int, k *[35][8]float32, scale *float32, n int)
 
 func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int) bool {
 	if !useFDCTCols {
@@ -137,8 +137,8 @@ func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int
 		var tmp [8 * 32]float32
 
 		fdct32SplitRVV(&src[0], srcStride, &half[0], &fdctConsts, 8)
-		fdct16ColsRVV(&half[0], 32, &half[0], 32, &fdctConsts, &fdctOne[0], 8, &tmp[0])
-		fdct16ColsRVV(&half[16*32], 32, &half[16*32], 32, &fdctConsts, &fdctOne[0], 8, &tmp[0])
+		fdct16ColsRVV(&half[0], 32, &half[0], 32, &fdctConsts, &fdctConsts[fdctOne][0], 8, &tmp[0])
+		fdct16ColsRVV(&half[16*32], 32, &half[16*32], 32, &fdctConsts, &fdctConsts[fdctOne][0], 8, &tmp[0])
 		fdct32MergeRVV(&half[0], &dst[0], dstStride, &fdctConsts, &fdctConsts[fdctInv32][0], 8)
 	default:
 		return false
