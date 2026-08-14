@@ -27,6 +27,8 @@ var useQuant bool
 
 var useCbrt bool
 
+var useCbrt512 bool
+
 var useFDCTCols bool
 
 var useDequant512 bool

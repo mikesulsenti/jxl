@@ -84,6 +84,52 @@ func BenchmarkEncode(b *testing.B) {
 	}
 }
 
+func BenchmarkCbrt(b *testing.B) {
+	if !useCbrt {
+		b.Skip("no kernel")
+	}
+
+	r := rand.New(rand.NewPCG(9, 10))
+
+	src := make([]float32, 1<<16)
+	for i := range src {
+		src[i] = float32(r.NormFloat64())
+	}
+
+	buf := make([]float32, len(src))
+
+	wide := useCbrt512
+	defer func() { useCbrt512 = wide }()
+
+	for _, tc := range []struct {
+		name string
+		w    bool
+	}{{"a_avx2", false}, {"b_avx512", true}, {"c_avx2", false}, {"d_avx512", true}} {
+		if tc.w && !wide {
+			continue
+		}
+
+		b.Run(tc.name, func(b *testing.B) {
+			useCbrt512 = tc.w
+
+			var n int64
+
+			for b.Loop() {
+				copy(buf, src)
+				cbrtBlock(buf)
+
+				n += int64(len(buf))
+			}
+
+			b.StopTimer()
+
+			if e := b.Elapsed().Seconds(); e > 0 {
+				b.ReportMetric(float64(n)/e/1e6, "Msample/s")
+			}
+		})
+	}
+}
+
 func BenchmarkDequant(b *testing.B) {
 	if !useDequant512 {
 		b.Skip("no AVX-512 kernel")

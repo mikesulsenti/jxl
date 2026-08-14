@@ -22,6 +22,16 @@ var cbrtConsts = func() (k [7][8]float32) {
 	return k
 }()
 
+var cbrtConsts512 = func() (k [7][16]float32) {
+	for i := range k {
+		for j := range k[i] {
+			k[i][j] = cbrtConsts[i][0]
+		}
+	}
+
+	return k
+}()
+
 var quantConsts = func() (k [6][8]float32) {
 	fill := func(row int, bits uint32) {
 		for i := range k[row] {
@@ -91,6 +101,7 @@ func dspInit() {
 	useDequant = true
 	useQuant = true
 	useCbrt = true
+	useCbrt512 = hasAVX512
 	useFDCTCols = true
 	useDequant512 = hasAVX512
 }
@@ -140,11 +151,20 @@ func fdctCols8(n int, src []float32, srcStride int, dst []float32, dstStride int
 //go:noescape
 func cbrtAVX2(p *float32, n int, k *[7][8]float32)
 
+//go:noescape
+func cbrt512(p *float32, n int, k *[7][16]float32)
+
 func cbrtBlock(p []float32) int {
 	n := len(p) &^ 7
 
 	if !useCbrt || n == 0 {
 		return 0
+	}
+
+	if useCbrt512 && n&15 == 0 {
+		cbrt512(&p[0], n, &cbrtConsts512)
+
+		return n
 	}
 
 	cbrtAVX2(&p[0], n, &cbrtConsts)
