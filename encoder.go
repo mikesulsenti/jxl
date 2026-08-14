@@ -151,7 +151,10 @@ func (f *frame) blockCost(s *dctScratch, t hfTransform, bx, by int, lf *[3][]flo
 	return rate, sse
 }
 
-const transformRateMargin = 0.7
+const (
+	transformRateMargin   = 0.7
+	adaptiveQuantStrength = 0.25
+)
 
 var transformCandidates = [...]hfTransform{
 	hfDCT32X32, hfDCT32X16, hfDCT16X32, hfDCT32X8, hfDCT8X32, hfDCT16X16, hfDCT16X8, hfDCT8X16,
@@ -414,7 +417,14 @@ func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 	return out, nil
 }
 
-func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32, threads int) ([]byte, error) {
+type encodeParams struct {
+	quant    int32
+	threads  int
+	adaptive bool
+	strength float32
+}
+
+func encodeVarDCTImage(rgb [3][]float32, w, h int, p encodeParams) ([]byte, error) {
 	if w <= 0 || h <= 0 {
 		return nil, ErrInvalid
 	}
@@ -431,7 +441,7 @@ func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32, threads int) ([]
 	head.meta = defaultImageMetadata()
 	head.transform = defaultCustomTransformData()
 
-	f, err := newEncodeFrame(&head.meta, &head.transform, w, h, quant)
+	f, err := newEncodeFrame(&head.meta, &head.transform, w, h, p.quant)
 	if err != nil {
 		return nil, err
 	}
@@ -445,13 +455,21 @@ func encodeVarDCTImage(rgb [3][]float32, w, h int, quant int32, threads int) ([]
 
 	f.fillXYB(&fwd, rgb, w, h)
 
-	scratch := make([]dctScratch, min(numThreads(threads), f.hdr.numGroups()))
+	if p.adaptive {
+		f.applyAdaptiveQuant(p.quant, p.strength)
+	}
+
+	scratch := make([]dctScratch, min(numThreads(p.threads), f.hdr.numGroups()))
 
 	for i := range scratch {
 		scratch[i].alloc(f)
 	}
 
 	f.chooseTransforms(scratch)
+
+	if p.adaptive {
+		f.adjustQuantField()
+	}
 
 	body, err := f.encodeSections(scratch)
 	if err != nil {
@@ -499,7 +517,7 @@ func encodeOptions(opts []EncodeOptions) EncodeOptions {
 func qualityToQuant(q int) int32 {
 	q = min(max(q, 1), 100)
 
-	return int32(min(max(int(powf(float32(q)/100, 3)*255)+1, 1), 256))
+	return int32(min(max(int(powf(float32(q)/100, 3)*255)+1, 1), maxRawQuant))
 }
 
 var srgb8Linear = func() (t [256]float32) {
@@ -599,7 +617,12 @@ func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 
 	imageToLinear(m, &rgb, width, height)
 
-	data, err := encodeVarDCTImage(rgb, width, height, qualityToQuant(o.Quality), o.Threads)
+	data, err := encodeVarDCTImage(rgb, width, height, encodeParams{
+		quant:    qualityToQuant(o.Quality),
+		threads:  o.Threads,
+		adaptive: true,
+		strength: adaptiveQuantStrength,
+	})
 	if err != nil {
 		return err
 	}

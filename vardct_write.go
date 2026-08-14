@@ -219,6 +219,8 @@ func (q *quantizerParams) write(w *bitWriter) {
 	}
 }
 
+const maxRawQuant = 256
+
 func defaultColorCorrelation() colorCorrelation {
 	return colorCorrelation{factor: defaultColorFactor, baseB: 1}
 }
@@ -472,7 +474,7 @@ func (f *frame) encodeHFMetadata(w *bitWriter, g int, hdr *groupHeader, tree *ma
 				continue
 			}
 
-			if v.rawQuant[pos] < 1 || v.rawQuant[pos] > 256 {
+			if v.rawQuant[pos] < 1 || v.rawQuant[pos] > maxRawQuant {
 				w.setErr(ErrInvalid)
 
 				return

@@ -2,6 +2,8 @@ package jxl
 
 import (
 	"bytes"
+	"cmp"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -10,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -39,7 +43,7 @@ func TestEncodeDecodesBack(t *testing.T) {
 
 		rgb := gradientRGB(w, h)
 
-		data, err := encodeVarDCTImage(rgb, w, h, 200, 0)
+		data, err := encodeVarDCTImage(rgb, w, h, encodeParams{quant: 200})
 		if err != nil {
 			t.Fatalf("%v: encode gave %v", dims, err)
 		}
@@ -108,7 +112,7 @@ func TestEncodeBlocky(t *testing.T) {
 
 	rgb := blockyRGB(rng, w, h)
 
-	data, err := encodeVarDCTImage(rgb, w, h, 200, 0)
+	data, err := encodeVarDCTImage(rgb, w, h, encodeParams{quant: 200})
 	if err != nil {
 		t.Fatalf("encode gave %v", err)
 	}
@@ -149,7 +153,7 @@ func TestEncodeNoise(t *testing.T) {
 		}
 	}
 
-	data, err := encodeVarDCTImage(rgb, w, h, 250, 0)
+	data, err := encodeVarDCTImage(rgb, w, h, encodeParams{quant: 250})
 	if err != nil {
 		t.Fatalf("encode gave %v", err)
 	}
@@ -403,11 +407,14 @@ func TestEncodeMultiGroup(t *testing.T) {
 				dims, worst, single)
 		}
 
+		flatWhole, _ := encodeQuality(t, src, DefaultQuality, 0)
+		flatCrop, _ := encodeQuality(t, crop, DefaultQuality, 0)
+
 		for y := range ch {
 			for x := range cw {
-				if got.At(x, y) != alone.At(x, y) {
+				if flatWhole.At(x, y) != flatCrop.At(x, y) {
 					t.Fatalf("%v: pixel %d,%d is %v alongside other groups, %v alone",
-						dims, x, y, got.At(x, y), alone.At(x, y))
+						dims, x, y, flatWhole.At(x, y), flatCrop.At(x, y))
 				}
 			}
 		}
@@ -455,6 +462,87 @@ func texturedImage(w, h int) *image.NRGBA {
 				R: uint8(math.Round(min(max(r, 0), 1) * 255)),
 				G: uint8(math.Round(min(max(g, 0), 1) * 255)),
 				B: uint8(math.Round(min(max(b, 0), 1) * 255)),
+				A: 255,
+			})
+		}
+	}
+
+	return m
+}
+
+func detailedImage(w, h int) *image.NRGBA {
+	m := image.NewNRGBA(image.Rect(0, 0, w, h))
+	rng := rand.New(rand.NewPCG(29, 31))
+
+	noise := make([]float64, w*h)
+
+	for i := range noise {
+		noise[i] = rng.NormFloat64()
+	}
+
+	for y := range h {
+		for x := range w {
+			fx, fy := float64(x), float64(y)
+
+			sky := 0.45 + 0.35*fy/float64(h)
+			r, g, b := sky*0.8, sky*0.9, sky
+
+			if fy > float64(h)*0.55 {
+				n := noise[y*w+x]
+				grass := 0.28 + 0.06*math.Sin(fx/2.7) + 0.05*math.Cos(fy/1.9) + 0.05*n
+
+				r, g, b = grass*0.7, grass, grass*0.45
+			}
+
+			if d := math.Hypot(fx-float64(w)*0.3, fy-float64(h)*0.3); d < float64(h)*0.12 {
+				r, g, b = 0.92, 0.86, 0.35
+			}
+
+			m.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(math.Round(min(max(r, 0), 1) * 255)),
+				G: uint8(math.Round(min(max(g, 0), 1) * 255)),
+				B: uint8(math.Round(min(max(b, 0), 1) * 255)),
+				A: 255,
+			})
+		}
+	}
+
+	return m
+}
+
+func smoothImage(w, h int) *image.NRGBA {
+	m := image.NewNRGBA(image.Rect(0, 0, w, h))
+
+	for y := range h {
+		for x := range w {
+			fx, fy := float64(x)/float64(w), float64(y)/float64(h)
+
+			r := 0.35 + 0.5*fx
+			g := 0.4 + 0.4*fy
+			b := 0.6 - 0.3*fx*fy
+
+			m.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(math.Round(min(max(r, 0), 1) * 255)),
+				G: uint8(math.Round(min(max(g, 0), 1) * 255)),
+				B: uint8(math.Round(min(max(b, 0), 1) * 255)),
+				A: 255,
+			})
+		}
+	}
+
+	return m
+}
+
+func noiseImage(w, h int) *image.NRGBA {
+	m := image.NewNRGBA(image.Rect(0, 0, w, h))
+	rng := rand.New(rand.NewPCG(41, 43))
+
+	for y := range h {
+		for x := range w {
+			m.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(60 + rng.IntN(160)),
+				G: uint8(60 + rng.IntN(160)),
+				B: uint8(60 + rng.IntN(160)),
 				A: 255,
 			})
 		}
@@ -579,5 +667,211 @@ func TestEncodeAgainstCjxl(t *testing.T) {
 
 	if worst > 8 {
 		t.Fatalf("we are %.1fx larger than cjxl at matched distortion, ratchet is 8x", worst)
+	}
+}
+
+func ssimulacra2Path(t *testing.T) string {
+	t.Helper()
+
+	for _, p := range []string{
+		"/temp/jxl/libjxl/build/tools/ssimulacra2",
+		"ssimulacra2",
+	} {
+		if found, err := exec.LookPath(p); err == nil {
+			return found
+		}
+	}
+
+	t.Skip("ssimulacra2 is not built")
+
+	return ""
+}
+
+func ssimulacra2(t *testing.T, tool, dir string, src, got image.Image) float64 {
+	t.Helper()
+
+	paths := [2]string{filepath.Join(dir, "a.png"), filepath.Join(dir, "b.png")}
+
+	for i, m := range [2]image.Image{src, got} {
+		f, err := os.Create(paths[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := png.Encode(f, m); err != nil {
+			t.Fatal(err)
+		}
+
+		f.Close()
+	}
+
+	out, err := exec.Command(tool, paths[0], paths[1]).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssimulacra2 failed: %v\n%s", err, out)
+	}
+
+	var score float64
+
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%g", &score); err != nil {
+		t.Fatalf("ssimulacra2 printed %q", out)
+	}
+
+	return score
+}
+
+func encodeQuality(t *testing.T, src image.Image, q int, strength float32) (image.Image, int) {
+	t.Helper()
+
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+
+	var rgb [3][]float32
+
+	for c := range 3 {
+		rgb[c] = make([]float32, w*h)
+	}
+
+	imageToLinear(src, &rgb, w, h)
+
+	data, err := encodeVarDCTImage(rgb, w, h, encodeParams{
+		quant:    qualityToQuant(q),
+		adaptive: strength > 0,
+		strength: strength,
+	})
+	if err != nil {
+		t.Fatalf("quality %d: %v", q, err)
+	}
+
+	got, err := Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("quality %d: decode gave %v", q, err)
+	}
+
+	return got, len(data)
+}
+
+type ratePoint struct {
+	bytes int
+	score float64
+}
+
+func interpolateScore(curve []ratePoint, size int) (float64, bool) {
+	for i := 1; i < len(curve); i++ {
+		lo, hi := curve[i-1], curve[i]
+
+		if size < lo.bytes || size > hi.bytes {
+			continue
+		}
+
+		if hi.bytes == lo.bytes {
+			return lo.score, true
+		}
+
+		t := float64(size-lo.bytes) / float64(hi.bytes-lo.bytes)
+
+		return lo.score + t*(hi.score-lo.score), true
+	}
+
+	return 0, false
+}
+
+func aqCurve(t *testing.T, tool, dir string, src image.Image, strength float32) []ratePoint {
+	t.Helper()
+
+	var curve []ratePoint
+
+	for q := 30; q <= 95; q += 5 {
+		got, size := encodeQuality(t, src, q, strength)
+		curve = append(curve, ratePoint{size, ssimulacra2(t, tool, dir, src, got)})
+	}
+
+	slices.SortFunc(curve, func(a, b ratePoint) int { return cmp.Compare(a.bytes, b.bytes) })
+
+	return curve
+}
+
+func aqDelta(flat, curve []ratePoint) (float64, int, int) {
+	sum, wins, total := 0.0, 0, 0
+
+	for _, a := range curve {
+		want, ok := interpolateScore(flat, a.bytes)
+		if !ok {
+			continue
+		}
+
+		total++
+		sum += a.score - want
+
+		if a.score > want {
+			wins++
+		}
+	}
+
+	if total == 0 {
+		return 0, 0, 0
+	}
+
+	return sum / float64(total), wins, total
+}
+
+func aqCorpus() []struct {
+	name string
+	img  image.Image
+} {
+	return []struct {
+		name string
+		img  image.Image
+	}{
+		{"photo", detailedImage(320, 240)},
+		{"textured", texturedImage(256, 256)},
+		{"blocks", testImage(256, 192)},
+		{"smooth", smoothImage(256, 192)},
+		{"noise", noiseImage(192, 192)},
+	}
+}
+
+func TestAdaptiveQuantCorpus(t *testing.T) {
+	tool := ssimulacra2Path(t)
+	dir := t.TempDir()
+
+	total := 0.0
+
+	for _, tc := range aqCorpus() {
+		flat := aqCurve(t, tool, dir, tc.img, 0)
+		mean, wins, n := aqDelta(flat, aqCurve(t, tool, dir, tc.img, adaptiveQuantStrength))
+
+		total += mean
+
+		t.Logf("%-9s %+.3f ssimulacra2 at matched size, wins %d of %d", tc.name, mean, wins, n)
+
+		if mean < -0.05 {
+			t.Fatalf("%s: adaptive quantisation costs %+.3f", tc.name, mean)
+		}
+	}
+
+	mean := total / float64(len(aqCorpus()))
+
+	t.Logf("corpus mean %+.3f at strength %.2f", mean, adaptiveQuantStrength)
+
+	if mean <= 0 {
+		t.Fatalf("adaptive quantisation scores %+.3f over the corpus", mean)
+	}
+}
+
+func TestAdaptiveQuantStrengthSweep(t *testing.T) {
+	if testing.Short() {
+		t.Skip("the sweep is slow")
+	}
+
+	tool := ssimulacra2Path(t)
+	dir := t.TempDir()
+
+	src := image.Image(detailedImage(320, 240))
+	flat := aqCurve(t, tool, dir, src, 0)
+
+	for _, strength := range []float32{0.15, 0.25, 0.35, 0.5, 1.0} {
+		mean, wins, n := aqDelta(flat, aqCurve(t, tool, dir, src, strength))
+
+		t.Logf("strength %.2f: %+.3f, wins %d of %d", strength, mean, wins, n)
 	}
 }

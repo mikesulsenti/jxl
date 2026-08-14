@@ -944,6 +944,17 @@ func powf(a, b float32) float32 {
 	return float32(math.Pow(float64(a), float64(b)))
 }
 
+func sqrtf(v float32) float32 { return float32(math.Sqrt(float64(v))) }
+func expf(v float32) float32  { return float32(math.Exp(float64(v))) }
+
+func absf(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+
+	return v
+}
+
 func (v *varDCT) sigmaImage(rf *restorationFilter) ([]float32, int) {
 	out := make([]float32, v.bw*v.bh)
 	scale := 1 / v.quant.invGlobalScale()
