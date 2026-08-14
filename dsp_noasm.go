@@ -12,4 +12,6 @@ func dequant(*dequantArgs) bool { return false }
 
 func quantize(*quantArgs) bool { return false }
 
+func fdctCols8(int, []float32, int, []float32, int) bool { return false }
+
 func transpose8([]float32, int, []float32, int) {}

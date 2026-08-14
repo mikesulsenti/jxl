@@ -91,3 +91,5 @@ func dequant(a *dequantArgs) bool {
 	return true
 }
 func quantize(*quantArgs) bool { return false }
+
+func fdctCols8(int, []float32, int, []float32, int) bool { return false }

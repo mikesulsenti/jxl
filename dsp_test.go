@@ -506,3 +506,70 @@ func TestQuantizeAsmMatchesGo(t *testing.T) {
 		}
 	}
 }
+
+func TestFDCTColsAsmMatchesGo(t *testing.T) {
+	if !useFDCTCols {
+		t.Skip("no kernel compiled in")
+	}
+
+	r := rand.New(rand.NewPCG(31, 37))
+
+	for _, m := range []int{8, 16, 24} {
+		for _, stride := range []int{m, m + 8} {
+			src := make([]float32, blockDim*stride)
+			want := make([]float32, blockDim*stride)
+			got := make([]float32, blockDim*stride)
+			tmp := make([]float32, 4*maxCoeffArea)
+
+			for i := range src {
+				switch r.IntN(8) {
+				case 0:
+					src[i] = 0
+				case 1:
+					src[i] = float32(r.NormFloat64()) * 1e5
+				default:
+					src[i] = float32(r.NormFloat64()) * 100
+				}
+			}
+
+			useFDCTCols = false
+			fdctColumns(blockDim, m, src, stride, want, stride, tmp)
+			useFDCTCols = true
+
+			fdctColumns(blockDim, m, src, stride, got, stride, tmp)
+
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("m %d stride %d: sample %d is %v, want %v", m, stride, i, got[i], want[i])
+				}
+			}
+		}
+	}
+
+	// fdct2d runs the first pass in place, so the kernel must load before it stores.
+	for _, dims := range [][2]int{{8, 8}, {8, 16}, {16, 8}, {32, 32}} {
+		n := dims[0] * dims[1]
+
+		a := make([]float32, n)
+		b := make([]float32, n)
+		scratch := make([]float32, 8*maxCoeffArea)
+
+		for i := range a {
+			a[i] = float32(r.NormFloat64()) * 50
+		}
+
+		copy(b, a)
+
+		useFDCTCols = false
+		fdct2d(dims[0], dims[1], a, scratch)
+		useFDCTCols = true
+
+		fdct2d(dims[0], dims[1], b, scratch)
+
+		for i := range a {
+			if a[i] != b[i] {
+				t.Fatalf("fdct2d %v: coefficient %d is %v, want %v", dims, i, b[i], a[i])
+			}
+		}
+	}
+}

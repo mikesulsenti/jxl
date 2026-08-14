@@ -27,6 +27,8 @@ var useDequant bool
 
 var useQuant bool
 
+var useFDCTCols bool
+
 var useDequant512 bool
 
 type dequantArgs struct {

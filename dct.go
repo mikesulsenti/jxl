@@ -17,6 +17,7 @@ var (
 	dctMultipliers [9][]float32
 	dctResample    [6][]float32
 	idctConsts     [31][8]float32
+	fdctConsts     [8][8]float32
 )
 
 func init() {
@@ -51,6 +52,17 @@ func init() {
 	for i, v := range c {
 		for j := range idctConsts[i] {
 			idctConsts[i][j] = v
+		}
+	}
+
+	f := []float32{dctSqrt2}
+	f = append(f, dctMultipliers[2]...)
+	f = append(f, dctMultipliers[3]...)
+	f = append(f, 1.0/blockDim)
+
+	for i, v := range f {
+		for j := range fdctConsts[i] {
+			fdctConsts[i][j] = v
 		}
 	}
 }
@@ -270,7 +282,15 @@ func idct2d(rows, cols int, data, scratch []float32) {
 func fdctColumns(n, m int, src []float32, srcStride int, dst []float32, dstStride int, tmp []float32) {
 	inv := 1 / float32(n)
 
-	for j := range m {
+	j := 0
+
+	for ; j+8 <= m; j += 8 {
+		if !fdctCols8(n, src[j:], srcStride, dst[j:], dstStride) {
+			break
+		}
+	}
+
+	for ; j < m; j++ {
 		for i := range n {
 			tmp[i] = src[i*srcStride+j]
 		}
