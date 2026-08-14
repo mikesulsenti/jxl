@@ -119,6 +119,24 @@ func newSourceDecoder(s *source, o Options, partial bool) (*decoder, error) {
 	}
 }
 
+func (d *decoder) checkFrameSize(w, h uint32) error {
+	lim := int64(d.opts.FrameSizeLimit)
+
+	if lim == 0 {
+		lim = DefaultFrameSizeLimit
+	}
+
+	if lim < 0 {
+		return nil
+	}
+
+	if int64(w)*int64(h) > lim {
+		return ErrFrameTooLarge
+	}
+
+	return nil
+}
+
 func levelAllows(level int, hdr *fileHeader, iccSize int) bool {
 	x, y := uint64(hdr.size.xsize), uint64(hdr.size.ysize)
 	icc := uint64(iccSize)

@@ -415,10 +415,6 @@ func FuzzContainer(f *testing.F) {
 	})
 }
 
-// Images past this are left to the corpus tests, so fuzzing spends its budget
-// on parser paths rather than on allocation.
-const fuzzPixelLimit = 1 << 22
-
 func FuzzDecode(f *testing.F) {
 	for _, g := range []string{"testdata/streams/*.jxl", "testdata/bench/*.jxl"} {
 		paths, err := filepath.Glob(g)
@@ -434,20 +430,15 @@ func FuzzDecode(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		cfg, err := DecodeConfig(bytes.NewReader(data))
-		if err != nil {
-			return
-		}
-
-		if cfg.Width*cfg.Height > fuzzPixelLimit {
-			return
-		}
-
-		opt := Options{Threads: 1}
+		opt := Options{Threads: 1, FrameSizeLimit: 1 << 22}
 
 		img, err := Decode(bytes.NewReader(data), opt)
 		if err == nil && img == nil {
 			t.Fatal("no error but no image")
+		}
+
+		if _, err := DecodeConfig(bytes.NewReader(data)); err != nil {
+			return
 		}
 
 		if _, err := DecodeAll(bytes.NewReader(data), opt); err != nil {
@@ -458,4 +449,35 @@ func FuzzDecode(f *testing.F) {
 			t.Fatal("DecodeAll succeeded but DecodeFloat did not")
 		}
 	})
+}
+
+func TestFrameSizeLimit(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "streams", "dct_epf3.jxl"))
+	if err != nil {
+		t.Skip(err)
+	}
+
+	cfg, err := DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	area := cfg.Width * cfg.Height
+
+	for _, tc := range []struct {
+		limit int
+		want  error
+	}{
+		{0, nil},
+		{area, nil},
+		{area - 1, ErrFrameTooLarge},
+		{1, ErrFrameTooLarge},
+		{-1, nil},
+	} {
+		_, err := Decode(bytes.NewReader(data), Options{Level: 10, FrameSizeLimit: tc.limit})
+
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("limit %d over %d pixels gave %v, want %v", tc.limit, area, err, tc.want)
+		}
+	}
 }

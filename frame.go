@@ -58,6 +58,10 @@ func (d *decoder) readFrameHeader(r *bitReader) (*frame, error) {
 		return nil, err
 	}
 
+	if err := d.checkFrameSize(f.hdr.width, f.hdr.height); err != nil {
+		return nil, err
+	}
+
 	f.toc.read(r, f.hdr.numTOCEntries())
 
 	if err := r.err(); err != nil {

@@ -17,8 +17,16 @@ var (
 	ErrUnsupported = errors.New("jxl: unsupported feature")
 )
 
+// ErrFrameTooLarge is returned when a frame's area exceeds
+// Options.FrameSizeLimit.
+var ErrFrameTooLarge = errors.New("jxl: frame exceeds size limit")
+
 // DefaultLevel is the codestream level enforced when Options.Level is zero.
 const DefaultLevel = 5
+
+// DefaultFrameSizeLimit is the frame area, in pixels, accepted when
+// Options.FrameSizeLimit is zero.
+const DefaultFrameSizeLimit = 16384 * 16384
 
 // Options configure a decode.
 type Options struct {
@@ -27,6 +35,10 @@ type Options struct {
 	// Threads bounds the goroutines decoding one frame. Zero means GOMAXPROCS,
 	// one decodes serially.
 	Threads int
+	// FrameSizeLimit bounds a frame's area in pixels, so that a corrupt or
+	// hostile header cannot ask for an unbounded allocation. Zero means
+	// DefaultFrameSizeLimit; a negative value removes the limit.
+	FrameSizeLimit int
 }
 
 func options(opts []Options) Options {
