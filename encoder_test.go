@@ -976,5 +976,3 @@ func matchedSize(curve []ratePoint, score float64) (float64, bool) {
 
 	return 0, false
 }
-
-

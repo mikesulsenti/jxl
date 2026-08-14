@@ -1,4 +1,7 @@
-// Package jxl decodes JPEG XL images.
+// Package jxl decodes and encodes JPEG XL images.
+//
+// Decoding covers both Modular and VarDCT codestreams. Encoding writes a
+// single lossy VarDCT frame from sRGB input.
 package jxl
 
 import (

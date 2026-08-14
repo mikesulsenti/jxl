@@ -2,6 +2,7 @@ package jxl
 
 import (
 	"image"
+	"image/color"
 	"io"
 	"math"
 )
@@ -558,7 +559,8 @@ func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) 
 
 // EncodeOptions controls the encoder. The zero value is a reasonable default.
 type EncodeOptions struct {
-	// Quality runs from 1 to 100. Zero means DefaultQuality.
+	// Quality runs from 1 to 100, where 100 is the least lossy. Zero means
+	// DefaultQuality.
 	Quality int
 	// Threads bounds the goroutines encoding one frame. Zero means GOMAXPROCS,
 	// one encodes serially.
@@ -628,27 +630,27 @@ func imageRows(m image.Image) rowSource {
 	switch src := m.(type) {
 	case *image.NRGBA:
 		return linearRows(func(x, y int) (uint32, uint32, uint32) {
-			r, g, bl, _ := src.NRGBAAt(b.Min.X+x, b.Min.Y+y).RGBA()
+			c := src.NRGBAAt(b.Min.X+x, b.Min.Y+y)
 
-			return r, g, bl
+			return uint32(c.R) * 0x101, uint32(c.G) * 0x101, uint32(c.B) * 0x101
 		})
 	case *image.RGBA:
 		return linearRows(func(x, y int) (uint32, uint32, uint32) {
-			r, g, bl, _ := src.RGBAAt(b.Min.X+x, b.Min.Y+y).RGBA()
+			c := color.NRGBAModel.Convert(src.RGBAAt(b.Min.X+x, b.Min.Y+y)).(color.NRGBA)
 
-			return r, g, bl
+			return uint32(c.R) * 0x101, uint32(c.G) * 0x101, uint32(c.B) * 0x101
 		})
 	case *image.NRGBA64:
 		return linearRows(func(x, y int) (uint32, uint32, uint32) {
-			r, g, bl, _ := src.NRGBA64At(b.Min.X+x, b.Min.Y+y).RGBA()
+			c := src.NRGBA64At(b.Min.X+x, b.Min.Y+y)
 
-			return r, g, bl
+			return uint32(c.R), uint32(c.G), uint32(c.B)
 		})
 	case *image.RGBA64:
 		return linearRows(func(x, y int) (uint32, uint32, uint32) {
-			r, g, bl, _ := src.RGBA64At(b.Min.X+x, b.Min.Y+y).RGBA()
+			c := color.NRGBA64Model.Convert(src.RGBA64At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA64)
 
-			return r, g, bl
+			return uint32(c.R), uint32(c.G), uint32(c.B)
 		})
 	case *image.Gray:
 		return linearRows(func(x, y int) (uint32, uint32, uint32) {
@@ -664,14 +666,15 @@ func imageRows(m image.Image) rowSource {
 		})
 	default:
 		return linearRows(func(x, y int) (uint32, uint32, uint32) {
-			r, g, bl, _ := m.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			c := color.NRGBA64Model.Convert(m.At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA64)
 
-			return r, g, bl
+			return uint32(c.R), uint32(c.G), uint32(c.B)
 		})
 	}
 }
 
-// Encode writes m as a JPEG XL codestream. Colour is treated as sRGB.
+// Encode writes m as a lossy JPEG XL codestream. Samples are treated as sRGB,
+// and any alpha channel is dropped.
 func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 	o := encodeOptions(opts)
 
