@@ -99,6 +99,10 @@ func newSourceDecoder(s *source, o Options, partial bool) (*decoder, error) {
 		}
 
 		if err == nil {
+			if !levelAllows(d.opts.Level, &d.hdr, len(d.iccp)) {
+				return nil, ErrUnsupported
+			}
+
 			d.src = s
 			d.used = br.pos()
 
@@ -113,6 +117,32 @@ func newSourceDecoder(s *source, o Options, partial bool) (*decoder, error) {
 			return nil, err
 		}
 	}
+}
+
+func levelAllows(level int, hdr *fileHeader, iccSize int) bool {
+	x, y := uint64(hdr.size.xsize), uint64(hdr.size.ysize)
+	icc := uint64(iccSize)
+	channels := len(hdr.meta.extraChannels)
+
+	if x > 1<<30 || y > 1<<30 || x*y > 1<<40 || icc > 1<<28 || channels > 256 {
+		return false
+	}
+
+	if level >= 10 {
+		return true
+	}
+
+	if x > 1<<18 || y > 1<<18 || x*y > 1<<28 || icc > 1<<22 || channels > 4 {
+		return false
+	}
+
+	for i := range hdr.meta.extraChannels {
+		if hdr.meta.extraChannels[i].ecType == ecBlack {
+			return false
+		}
+	}
+
+	return true
 }
 
 func decodeAll(r io.Reader, o Options) (*JXL, error) {

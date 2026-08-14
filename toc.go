@@ -12,6 +12,12 @@ func (t *toc) read(r *bitReader, numEntries int) {
 
 	t.permuted = r.bit()
 
+	if numEntries < 0 || numEntries > r.left() {
+		r.setErr(ErrInvalid)
+
+		return
+	}
+
 	if t.permuted {
 		t.permutation = readTOCPermutation(r, numEntries)
 
@@ -21,12 +27,6 @@ func (t *toc) read(r *bitReader, numEntries int) {
 	}
 
 	r.zeroPad()
-
-	if numEntries < 0 || numEntries > r.left() {
-		r.setErr(ErrInvalid)
-
-		return
-	}
 
 	t.entries = make([]uint32, numEntries)
 	for i := range t.entries {

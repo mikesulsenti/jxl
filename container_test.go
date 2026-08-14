@@ -414,3 +414,48 @@ func FuzzContainer(f *testing.F) {
 		}
 	})
 }
+
+// Images past this are left to the corpus tests, so fuzzing spends its budget
+// on parser paths rather than on allocation.
+const fuzzPixelLimit = 1 << 22
+
+func FuzzDecode(f *testing.F) {
+	for _, g := range []string{"testdata/streams/*.jxl", "testdata/bench/*.jxl"} {
+		paths, err := filepath.Glob(g)
+		if err != nil {
+			f.Fatal(err)
+		}
+
+		for _, p := range paths {
+			if b, err := os.ReadFile(p); err == nil {
+				f.Add(b)
+			}
+		}
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		cfg, err := DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			return
+		}
+
+		if cfg.Width*cfg.Height > fuzzPixelLimit {
+			return
+		}
+
+		opt := Options{Threads: 1}
+
+		img, err := Decode(bytes.NewReader(data), opt)
+		if err == nil && img == nil {
+			t.Fatal("no error but no image")
+		}
+
+		if _, err := DecodeAll(bytes.NewReader(data), opt); err != nil {
+			return
+		}
+
+		if _, err := DecodeFloat(bytes.NewReader(data), opt); err != nil {
+			t.Fatal("DecodeAll succeeded but DecodeFloat did not")
+		}
+	})
+}
