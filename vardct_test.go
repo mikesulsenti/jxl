@@ -339,18 +339,18 @@ func TestACGroupRoundTrip(t *testing.T) {
 		}
 
 		numContexts := int(v.numHistograms) * v.bctx.numACContexts()
-		values := make([][]uint32, numContexts+zeroDensityContextLimit-zeroDensityContextCount)
+		values := make([]valueCounts, numContexts+zeroDensityContextLimit-zeroDensityContextCount)
 
 		if err := v.walkACGroup(rc, src, 0, 0, 0, &v.passes[0].orders, func(ctx int, packed uint32) {
-			values[ctx] = append(values[ctx], packed)
+			values[ctx].add(packed)
 		}); err != nil {
 			t.Fatalf("%v: collecting gave %v", dims, err)
 		}
 
 		used, perCluster := clusterContexts(values[:numContexts], 256)
 
-		for _, vs := range values[numContexts:] {
-			perCluster[0] = append(perCluster[0], vs...)
+		for i := numContexts; i < len(values); i++ {
+			perCluster[0].merge(&values[i])
 		}
 
 		hist, counts := buildHistograms(used, perCluster)

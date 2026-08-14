@@ -56,6 +56,11 @@ func TestHybridUintRoundTrip(t *testing.T) {
 			for _, v := range values {
 				token, nbits, extra := cfg.encode(v)
 
+				if got := cfg.extraBits(token); got != int(nbits) {
+					t.Fatalf("%v: value %d has %d extra bits, token %d says %d",
+						cfg, v, nbits, token, got)
+				}
+
 				var body bitWriter
 
 				body.bits(int(nbits), uint64(extra))
@@ -184,6 +189,18 @@ func TestContextMapForms(t *testing.T) {
 	t.Logf("context map forms chosen: %v", forms)
 }
 
+func countValues(values ...[]uint32) []valueCounts {
+	out := make([]valueCounts, len(values))
+
+	for i, vs := range values {
+		for _, v := range vs {
+			out[i].add(v)
+		}
+	}
+
+	return out
+}
+
 func randomValues(rng *rand.Rand, n, kind int) []uint32 {
 	out := make([]uint32, n)
 
@@ -245,13 +262,13 @@ func TestHistogramRoundTrip(t *testing.T) {
 				}
 
 				stream := make([]item, 3000)
-				values := make([][]uint32, clusters)
+				values := make([]valueCounts, clusters)
 
 				for i := range stream {
 					c := rng.IntN(numContexts)
 					v := randomValues(rng, 1, kind)[0]
 					stream[i] = item{c, v}
-					values[contextMap[c]] = append(values[contextMap[c]], v)
+					values[contextMap[c]].add(v)
 				}
 
 				h, counts := buildHistograms(contextMap, values)
@@ -322,7 +339,7 @@ func TestSignedRoundTrip(t *testing.T) {
 		values[i] = packSigned(v)
 	}
 
-	h, counts := buildHistograms([]uint8{0}, [][]uint32{values})
+	h, counts := buildHistograms([]uint8{0}, countValues(values))
 
 	var w bitWriter
 
@@ -381,7 +398,7 @@ func encodedBits(t *testing.T, cfg hybridUint, values []uint32) (int, bool) {
 
 	var w bitWriter
 
-	codes := writePrefixCode(&w, counts, int(maxToken)+1)
+	codes := writePrefixCode(&w, counts, int(maxToken)+1, &prefixScratch{})
 
 	for _, v := range values {
 		token, nbits, extra := cfg.encode(v)
@@ -405,9 +422,9 @@ func TestUintConfigChoice(t *testing.T) {
 	for kind := range 9 {
 		for range 3 {
 			values := randomValues(rng, 4000, kind)
-			distinct, weights := valueHistogram(values)
+			hist := countValues(values)[0].entries(nil)
 
-			chosen := chooseUintConfig(distinct, weights, huffmanMaxBits, 1<<huffmanMaxBits-1, &uintCostScratch{})
+			chosen := chooseUintConfig(hist, huffmanMaxBits, 1<<huffmanMaxBits-1, &uintCostScratch{})
 
 			got, ok := encodedBits(t, chosen, values)
 			if !ok {
@@ -435,21 +452,22 @@ func TestUintConfigChoice(t *testing.T) {
 	t.Logf("chosen configuration is at most %.2f%% over the exhaustive best", worst*100)
 }
 
-func clusterCost(m []uint8, merged [][]uint32) float64 {
+func clusterCost(m []uint8, merged []valueCounts) float64 {
 	total := 0.0
 
-	for _, vals := range merged {
-		if len(vals) == 0 {
+	var hist []histEntry
+
+	for i := range merged {
+		if merged[i].total == 0 {
 			continue
 		}
 
-		hist := sparseHistogram(vals)
-		n := uint64(len(vals))
+		hist = merged[i].entries(hist[:0])
 
-		cost := xLogX(n)
+		cost := xLogX(uint64(merged[i].total))
 
 		for _, e := range hist {
-			cost -= xLogX(e.count)
+			cost -= xLogX(uint64(e.count))
 		}
 
 		total += cost
@@ -458,16 +476,16 @@ func clusterCost(m []uint8, merged [][]uint32) float64 {
 	return total
 }
 
-func rankedClusters(values [][]uint32, limit int) ([]uint8, [][]uint32) {
+func rankedClusters(values []valueCounts, limit int) ([]uint8, []valueCounts) {
 	type ranked struct {
 		index, count int
 	}
 
 	var used []ranked
 
-	for i, v := range values {
-		if len(v) > 0 {
-			used = append(used, ranked{i, len(v)})
+	for i := range values {
+		if values[i].total > 0 {
+			used = append(used, ranked{i, int(values[i].total)})
 		}
 	}
 
@@ -481,12 +499,12 @@ func rankedClusters(values [][]uint32, limit int) ([]uint8, [][]uint32) {
 
 	m := make([]uint8, len(values))
 	clusters := min(len(used), limit)
-	merged := make([][]uint32, clusters)
+	merged := make([]valueCounts, clusters)
 
 	for rank, c := range used {
 		k := min(rank, clusters-1)
 		m[c.index] = uint8(k)
-		merged[k] = append(merged[k], values[c.index]...)
+		merged[k].merge(&values[c.index])
 	}
 
 	return m, merged
@@ -503,14 +521,14 @@ func TestClusterContextsBeatsRanking(t *testing.T) {
 		{200, 201, 200, 201, 202, 203, 204},
 	}
 
-	values := make([][]uint32, 600)
+	values := make([]valueCounts, 600)
 
 	for i := range values {
 		s := shapes[i%len(shapes)]
 		n := 4 + rng.IntN(60)
 
 		for range n {
-			values[i] = append(values[i], s[rng.IntN(len(s))])
+			values[i].add(s[rng.IntN(len(s))])
 		}
 	}
 

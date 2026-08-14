@@ -172,7 +172,7 @@ func TestPrefixCodeRoundTrip(t *testing.T) {
 
 				var w bitWriter
 
-				codes := writePrefixCode(&w, counts, alSize)
+				codes := writePrefixCode(&w, counts, alSize, &prefixScratch{})
 				if err := w.err(); err != nil {
 					t.Fatalf("alSize %d kind %d: write gave %v", alSize, kind, err)
 				}
@@ -302,7 +302,7 @@ func TestPrefixCodeOptimal(t *testing.T) {
 					continue
 				}
 
-				lengths := limitedLengths(counts, huffmanMaxBits)
+				lengths := limitedLengths(counts, huffmanMaxBits, &prefixScratch{})
 				if lengths == nil {
 					t.Fatalf("alSize %d kind %d: refused", alSize, kind)
 				}
@@ -344,7 +344,7 @@ func TestLimitedLengths(t *testing.T) {
 			for kind := range 6 {
 				counts := randomCounts(rng, n, kind)
 
-				lengths := limitedLengths(counts, limit)
+				lengths := limitedLengths(counts, limit, &prefixScratch{})
 				if lengths == nil {
 					t.Fatalf("limit %d n %d kind %d: refused", limit, n, kind)
 				}

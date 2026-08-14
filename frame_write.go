@@ -53,9 +53,15 @@ func (f *frame) encode(w *bitWriter, m *imageMetadata, imgW, imgH uint32, body [
 		return
 	}
 
+	total := 0
+
 	for _, sec := range body {
-		for _, b := range sec {
-			w.bits(8, uint64(b))
-		}
+		total += len(sec)
+	}
+
+	w.reserve(total)
+
+	for _, sec := range body {
+		w.writeBytes(sec)
 	}
 }

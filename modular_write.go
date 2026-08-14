@@ -65,7 +65,7 @@ func (t *maTree) finish() {
 	t.numProperties = int(maxProperty) + 1
 }
 
-func (t *maTree) write(w *bitWriter, leafValues [][]uint32) [][]prefixCode {
+func (t *maTree) write(w *bitWriter, leafValues []valueCounts) [][]prefixCode {
 	if len(t.nodes) == 0 || len(t.nodes)%2 == 0 {
 		w.setErr(ErrInvalid)
 
@@ -78,14 +78,14 @@ func (t *maTree) write(w *bitWriter, leafValues [][]uint32) [][]prefixCode {
 		return nil
 	}
 
-	values := make([][]uint32, numTreeContexts)
+	values := make([]valueCounts, numTreeContexts)
 
 	for i := range t.nodes {
 		n := &t.nodes[i]
 
 		if !n.isLeaf() {
-			values[ctxProperty] = append(values[ctxProperty], uint32(n.property)+1)
-			values[ctxSplitVal] = append(values[ctxSplitVal], packSigned(n.val))
+			values[ctxProperty].add(uint32(n.property) + 1)
+			values[ctxSplitVal].add(packSigned(n.val))
 
 			continue
 		}
@@ -97,11 +97,11 @@ func (t *maTree) write(w *bitWriter, leafValues [][]uint32) [][]prefixCode {
 			return nil
 		}
 
-		values[ctxProperty] = append(values[ctxProperty], 0)
-		values[ctxPredictor] = append(values[ctxPredictor], uint32(n.predictor()))
-		values[ctxOffset] = append(values[ctxOffset], packSigned(n.val))
-		values[ctxMultiplierLog] = append(values[ctxMultiplierLog], mulLog)
-		values[ctxMultiplierBits] = append(values[ctxMultiplierBits], mulBits)
+		values[ctxProperty].add(0)
+		values[ctxPredictor].add(uint32(n.predictor()))
+		values[ctxOffset].add(packSigned(n.val))
+		values[ctxMultiplierLog].add(mulLog)
+		values[ctxMultiplierBits].add(mulBits)
 	}
 
 	contexts := make([]uint8, numTreeContexts)
@@ -283,7 +283,7 @@ func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, str
 
 	tree.finish()
 
-	values := make([][]uint32, (len(tree.nodes)+1)/2)
+	values := make([]valueCounts, (len(tree.nodes)+1)/2)
 
 	var collect modScratch
 
@@ -293,7 +293,7 @@ func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, str
 		}
 
 		ok := m.walkChannel(tree, &hdr.wp, i, streamID, &collect, func(id uint32, residual int32) bool {
-			values[id] = append(values[id], packSigned(residual))
+			values[id].add(packSigned(residual))
 
 			return true
 		})

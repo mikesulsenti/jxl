@@ -60,27 +60,47 @@ func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int, quant in
 	return f, nil
 }
 
-func (f *frame) fillXYB(fwd *xybForward, rgb [3][]float32, w, h int) {
+func (f *frame) fillXYB(fwd *xybForward, src rowSource, w, h int) {
 	v := f.vardct
 	stride := v.bw * blockDim
 	n := v.bh * blockDim * stride
 
+	var row [3][]float32
+
+	for c := range 3 {
+		row[c] = make([]float32, w)
+	}
+
 	for y := range v.bh * blockDim {
-		sy := min(y, h-1)
+		o := y * stride
 
-		for x := range stride {
-			sx := min(x, w-1)
-			i := sy*w + sx
-			o := y*stride + x
+		if y >= h {
+			for c := range 3 {
+				copy(v.pixels[c][o:o+stride], v.pixels[c][o-stride:o])
+			}
 
-			r, g, b := rgb[0][i], rgb[1][i], rgb[2][i]
+			continue
+		}
 
-			v.pixels[0][o] = (fwd.inv[0]*r + fwd.inv[1]*g + fwd.inv[2]*b - fwd.scaledBias[0]) /
+		src(y, &row)
+
+		for x := range w {
+			r, g, b := row[0][x], row[1][x], row[2][x]
+
+			v.pixels[0][o+x] = (fwd.inv[0]*r + fwd.inv[1]*g + fwd.inv[2]*b - fwd.scaledBias[0]) /
 				fwd.intensityScale
-			v.pixels[1][o] = (fwd.inv[3]*r + fwd.inv[4]*g + fwd.inv[5]*b - fwd.scaledBias[1]) /
+			v.pixels[1][o+x] = (fwd.inv[3]*r + fwd.inv[4]*g + fwd.inv[5]*b - fwd.scaledBias[1]) /
 				fwd.intensityScale
-			v.pixels[2][o] = (fwd.inv[6]*r + fwd.inv[7]*g + fwd.inv[8]*b - fwd.scaledBias[2]) /
+			v.pixels[2][o+x] = (fwd.inv[6]*r + fwd.inv[7]*g + fwd.inv[8]*b - fwd.scaledBias[2]) /
 				fwd.intensityScale
+		}
+
+		for c := range 3 {
+			edge := v.pixels[c][o+w-1]
+
+			for x := w; x < stride; x++ {
+				v.pixels[c][o+x] = edge
+			}
 		}
 	}
 
@@ -341,23 +361,60 @@ func (f *frame) transformGroup(s *dctScratch, g int) bool {
 	return true
 }
 
+func codedBits(h *histograms, counts [][]uint32, codes [][]prefixCode) int {
+	total := 0
+
+	for c, cnt := range counts {
+		for t, n := range cnt {
+			if n == 0 {
+				continue
+			}
+
+			total += int(n) * (int(codes[c][t].bits) + h.uintConfigs[c].extraBits(uint32(t)))
+		}
+	}
+
+	return total
+}
+
+func reserveGroups(sections []*bitWriter, perGroup []int, bits int) {
+	values := 0
+
+	for _, n := range perGroup {
+		values += n
+	}
+
+	if values == 0 {
+		return
+	}
+
+	for g, n := range perGroup {
+		sections[g].reserve(bits/8*n/values + 64)
+	}
+}
+
 func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 	numLF := f.hdr.numLFGroups()
 	numGroups := f.hdr.numGroups()
 
 	nw := len(scratch)
-	perWorker := make([][][]uint32, nw)
+	perWorker := make([][]valueCounts, nw)
 
 	for i := range perWorker {
 		perWorker[i] = f.acValues()
 	}
+
+	perGroup := make([]int, numGroups)
 
 	err := overTasks(nw, numGroups, func(w, g int) error {
 		if !f.transformGroup(&scratch[w], g) {
 			return ErrUnsupported
 		}
 
-		return f.collectACGroup(&scratch[w], g, perWorker[w])
+		n, err := f.collectACGroup(&scratch[w], g, perWorker[w])
+		perGroup[g] = n
+
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -366,8 +423,8 @@ func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 	values := perWorker[0]
 
 	for _, other := range perWorker[1:] {
-		for i, vs := range other {
-			values[i] = append(values[i], vs...)
+		for i := range other {
+			values[i].merge(&other[i])
 		}
 	}
 
@@ -396,6 +453,8 @@ func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 	}
 
 	hist.resize(f.acContexts() + zeroDensityContextLimit - zeroDensityContextCount)
+
+	reserveGroups(sections[2+numLF:], perGroup, codedBits(hist, counts, codes))
 
 	sw := symbolWriter{codes: codes}
 
@@ -442,15 +501,9 @@ type encodeParams struct {
 	strength float32
 }
 
-func encodeVarDCTImage(rgb [3][]float32, w, h int, p encodeParams) ([]byte, error) {
+func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) {
 	if w <= 0 || h <= 0 {
 		return nil, ErrInvalid
-	}
-
-	for c := range 3 {
-		if len(rgb[c]) < w*h {
-			return nil, ErrInvalid
-		}
 	}
 
 	var head fileHeader
@@ -471,7 +524,7 @@ func encodeVarDCTImage(rgb [3][]float32, w, h int, p encodeParams) ([]byte, erro
 		return nil, ErrInvalid
 	}
 
-	f.fillXYB(&fwd, rgb, w, h)
+	f.fillXYB(&fwd, src, w, h)
 
 	if p.adaptive {
 		f.applyAdaptiveQuant(p.quant, p.strength)
@@ -554,61 +607,62 @@ func linearFrom16(v uint32) float32 {
 	return srgbToLinear(float32(v) / 65535)
 }
 
-func fillLinear(rgb *[3][]float32, width, height int, at func(x, y int) (uint32, uint32, uint32)) {
-	for y := range height {
-		for x := range width {
-			r, g, b := at(x, y)
-			i := y*width + x
+type rowSource func(y int, rgb *[3][]float32)
 
-			rgb[0][i] = linearFrom16(r)
-			rgb[1][i] = linearFrom16(g)
-			rgb[2][i] = linearFrom16(b)
+func linearRows(at func(x, y int) (uint32, uint32, uint32)) rowSource {
+	return func(y int, rgb *[3][]float32) {
+		for x := range rgb[0] {
+			r, g, b := at(x, y)
+
+			rgb[0][x] = linearFrom16(r)
+			rgb[1][x] = linearFrom16(g)
+			rgb[2][x] = linearFrom16(b)
 		}
 	}
 }
 
-func imageToLinear(m image.Image, rgb *[3][]float32, width, height int) {
+func imageRows(m image.Image) rowSource {
 	b := m.Bounds()
 
 	switch src := m.(type) {
 	case *image.NRGBA:
-		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+		return linearRows(func(x, y int) (uint32, uint32, uint32) {
 			r, g, bl, _ := src.NRGBAAt(b.Min.X+x, b.Min.Y+y).RGBA()
 
 			return r, g, bl
 		})
 	case *image.RGBA:
-		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+		return linearRows(func(x, y int) (uint32, uint32, uint32) {
 			r, g, bl, _ := src.RGBAAt(b.Min.X+x, b.Min.Y+y).RGBA()
 
 			return r, g, bl
 		})
 	case *image.NRGBA64:
-		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+		return linearRows(func(x, y int) (uint32, uint32, uint32) {
 			r, g, bl, _ := src.NRGBA64At(b.Min.X+x, b.Min.Y+y).RGBA()
 
 			return r, g, bl
 		})
 	case *image.RGBA64:
-		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+		return linearRows(func(x, y int) (uint32, uint32, uint32) {
 			r, g, bl, _ := src.RGBA64At(b.Min.X+x, b.Min.Y+y).RGBA()
 
 			return r, g, bl
 		})
 	case *image.Gray:
-		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+		return linearRows(func(x, y int) (uint32, uint32, uint32) {
 			r, g, bl, _ := src.GrayAt(b.Min.X+x, b.Min.Y+y).RGBA()
 
 			return r, g, bl
 		})
 	case *image.YCbCr:
-		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+		return linearRows(func(x, y int) (uint32, uint32, uint32) {
 			r, g, bl, _ := src.YCbCrAt(b.Min.X+x, b.Min.Y+y).RGBA()
 
 			return r, g, bl
 		})
 	default:
-		fillLinear(rgb, width, height, func(x, y int) (uint32, uint32, uint32) {
+		return linearRows(func(x, y int) (uint32, uint32, uint32) {
 			r, g, bl, _ := m.At(b.Min.X+x, b.Min.Y+y).RGBA()
 
 			return r, g, bl
@@ -627,15 +681,7 @@ func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 		return ErrInvalid
 	}
 
-	var rgb [3][]float32
-
-	for c := range 3 {
-		rgb[c] = make([]float32, width*height)
-	}
-
-	imageToLinear(m, &rgb, width, height)
-
-	data, err := encodeVarDCTImage(rgb, width, height, encodeParams{
+	data, err := encodeVarDCTImage(imageRows(m), width, height, encodeParams{
 		quant:    qualityToQuant(o.Quality),
 		threads:  o.Threads,
 		adaptive: true,

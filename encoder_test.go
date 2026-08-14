@@ -17,6 +17,14 @@ import (
 	"testing"
 )
 
+func planeRows(rgb [3][]float32, w int) rowSource {
+	return func(y int, dst *[3][]float32) {
+		for c := range 3 {
+			copy(dst[c], rgb[c][y*w:(y+1)*w])
+		}
+	}
+}
+
 func gradientRGB(w, h int) [3][]float32 {
 	var rgb [3][]float32
 
@@ -43,7 +51,7 @@ func TestEncodeDecodesBack(t *testing.T) {
 
 		rgb := gradientRGB(w, h)
 
-		data, err := encodeVarDCTImage(rgb, w, h, encodeParams{quant: 200})
+		data, err := encodeVarDCTImage(planeRows(rgb, w), w, h, encodeParams{quant: 200})
 		if err != nil {
 			t.Fatalf("%v: encode gave %v", dims, err)
 		}
@@ -112,7 +120,7 @@ func TestEncodeBlocky(t *testing.T) {
 
 	rgb := blockyRGB(rng, w, h)
 
-	data, err := encodeVarDCTImage(rgb, w, h, encodeParams{quant: 200})
+	data, err := encodeVarDCTImage(planeRows(rgb, w), w, h, encodeParams{quant: 200})
 	if err != nil {
 		t.Fatalf("encode gave %v", err)
 	}
@@ -153,7 +161,7 @@ func TestEncodeNoise(t *testing.T) {
 		}
 	}
 
-	data, err := encodeVarDCTImage(rgb, w, h, encodeParams{quant: 250})
+	data, err := encodeVarDCTImage(planeRows(rgb, w), w, h, encodeParams{quant: 250})
 	if err != nil {
 		t.Fatalf("encode gave %v", err)
 	}
@@ -733,15 +741,7 @@ func encodeQuality(t *testing.T, src image.Image, q int, strength float32) (imag
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 
-	var rgb [3][]float32
-
-	for c := range 3 {
-		rgb[c] = make([]float32, w*h)
-	}
-
-	imageToLinear(src, &rgb, w, h)
-
-	data, err := encodeVarDCTImage(rgb, w, h, encodeParams{
+	data, err := encodeVarDCTImage(imageRows(src), w, h, encodeParams{
 		quant:    qualityToQuant(q),
 		adaptive: strength > 0,
 		strength: strength,

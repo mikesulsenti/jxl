@@ -3,7 +3,6 @@ package jxl
 import (
 	"math"
 	"math/bits"
-	"slices"
 )
 
 func newHybridUint(splitExponent, msbInToken, lsbInToken uint32) hybridUint {
@@ -53,29 +52,17 @@ func (h hybridUint) encode(v uint32) (token, nbits, extra uint32) {
 	return token, nbits, extra
 }
 
-func valueHistogram(values []uint32) ([]uint32, []uint32) {
-	sorted := make([]uint32, len(values))
-	copy(sorted, values)
-	slices.Sort(sorted)
-
-	var distinct, weights []uint32
-
-	for i := 0; i < len(sorted); {
-		j := i
-
-		for j < len(sorted) && sorted[j] == sorted[i] {
-			j++
-		}
-
-		distinct = append(distinct, sorted[i])
-		weights = append(weights, uint32(j-i))
-		i = j
+func (h hybridUint) extraBits(token uint32) int {
+	if token < h.splitToken {
+		return 0
 	}
 
-	return distinct, weights
+	inToken := h.msbInToken + h.lsbInToken
+
+	return int(h.splitExponent + (token-h.splitToken)>>inToken - inToken)
 }
 
-func uintConfigCost(h hybridUint, distinct, weights []uint32, s *uintCostScratch,
+func uintConfigCost(h hybridUint, hist []histEntry, s *uintCostScratch,
 	maxAlphabet int, limit float64,
 ) (float64, bool) {
 	tokens, used := s.tokens, s.used[:0]
@@ -84,8 +71,8 @@ func uintConfigCost(h hybridUint, distinct, weights []uint32, s *uintCostScratch
 
 	var raw, total float64
 
-	for i, v := range distinct {
-		token, nbits, _ := h.encode(v)
+	for _, e := range hist {
+		token, nbits, _ := h.encode(e.value)
 
 		if int(token) >= maxAlphabet || raw >= limit {
 			for _, t := range used {
@@ -99,9 +86,9 @@ func uintConfigCost(h hybridUint, distinct, weights []uint32, s *uintCostScratch
 			used = append(used, token)
 		}
 
-		tokens[token] += weights[i]
-		raw += float64(weights[i]) * float64(nbits)
-		total += float64(weights[i])
+		tokens[token] += e.count
+		raw += float64(e.count) * float64(nbits)
+		total += float64(e.count)
 	}
 
 	cost := raw
@@ -122,7 +109,7 @@ type uintCostScratch struct {
 
 const tableBitsPerSymbol = 3
 
-func chooseUintConfig(distinct, weights []uint32, logAlphaSize, maxAlphabet int,
+func chooseUintConfig(hist []histEntry, logAlphaSize, maxAlphabet int,
 	s *uintCostScratch,
 ) hybridUint {
 	best := newHybridUint(uint32(logAlphaSize), 0, 0)
@@ -143,7 +130,7 @@ func chooseUintConfig(distinct, weights []uint32, logAlphaSize, maxAlphabet int,
 
 				h := newHybridUint(uint32(se), uint32(msb), uint32(lsb))
 
-				cost, ok := uintConfigCost(h, distinct, weights, s, maxAlphabet, bestCost)
+				cost, ok := uintConfigCost(h, hist, s, maxAlphabet, bestCost)
 				if ok && cost < bestCost {
 					best, bestCost = h, cost
 				}

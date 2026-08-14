@@ -44,6 +44,28 @@ func (w *bitWriter) bits(n int, v uint64) {
 	w.flush()
 }
 
+func (w *bitWriter) reserve(n int) {
+	if cap(w.data)-len(w.data) >= n {
+		return
+	}
+
+	data := make([]byte, len(w.data), len(w.data)+n)
+	copy(data, w.data)
+	w.data = data
+}
+
+func (w *bitWriter) writeBytes(b []byte) {
+	if w.nbits == 0 {
+		w.data = append(w.data, b...)
+
+		return
+	}
+
+	for _, v := range b {
+		w.bits(8, uint64(v))
+	}
+}
+
 func (w *bitWriter) bit(b bool) {
 	if b {
 		w.bits(1, 1)
@@ -69,9 +91,8 @@ func (w *bitWriter) append(src *bitWriter) {
 		return
 	}
 
-	for _, b := range src.data {
-		w.bits(8, uint64(b))
-	}
+	w.reserve(len(src.data) + 1)
+	w.writeBytes(src.data)
 
 	if src.nbits > 0 {
 		w.bits(src.nbits, src.buf&(1<<src.nbits-1))

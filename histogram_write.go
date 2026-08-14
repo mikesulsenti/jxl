@@ -2,6 +2,7 @@ package jxl
 
 import (
 	"cmp"
+	"maps"
 	"math"
 	"slices"
 )
@@ -73,12 +74,14 @@ func writeCodedContextMap(w *bitWriter, m []uint8, useMTF bool) {
 	}
 
 	values := make([]uint32, len(entries))
+	counted := make([]valueCounts, 1)
 
 	for i, v := range entries {
 		values[i] = uint32(v)
+		counted[0].add(uint32(v))
 	}
 
-	h, counts := buildHistograms(singleContext[:], [][]uint32{values})
+	h, counts := buildHistograms(singleContext[:], counted)
 
 	w.bit(false)
 	w.bit(useMTF)
@@ -193,16 +196,16 @@ func (h *histograms) write(w *bitWriter, counts [][]uint32) [][]prefixCode {
 	return h.huff.write(w, counts)
 }
 
-func clusterContexts(values [][]uint32, limit int) ([]uint8, [][]uint32) {
+func clusterContexts(values []valueCounts, limit int) ([]uint8, []valueCounts) {
 	type ranked struct {
 		index, count int
 	}
 
 	var used []ranked
 
-	for i, v := range values {
-		if len(v) > 0 {
-			used = append(used, ranked{i, len(v)})
+	for i := range values {
+		if values[i].total > 0 {
+			used = append(used, ranked{i, int(values[i].total)})
 		}
 	}
 
@@ -214,46 +217,33 @@ func clusterContexts(values [][]uint32, limit int) ([]uint8, [][]uint32) {
 
 	clusters := min(len(used), limit)
 	if clusters == 0 {
-		return m, [][]uint32{nil}
+		return m, make([]valueCounts, 1)
 	}
 
-	merged := make([][]uint32, 0, clusters)
-	buckets := make([]map[uint32]uint64, 0, clusters)
-	totals := make([]uint64, 0, clusters)
+	merged := make([]valueCounts, 0, clusters)
+
+	var hist []histEntry
 
 	for _, c := range used {
-		vals := values[c.index]
-		hist := sparseHistogram(vals)
+		src := &values[c.index]
+		hist = src.entries(hist[:0])
 
-		if len(buckets) < clusters {
-			counts := make(map[uint32]uint64, len(hist))
-
-			for _, e := range hist {
-				counts[e.value] = e.count
-			}
-
-			buckets = append(buckets, counts)
-			totals = append(totals, uint64(len(vals)))
-			merged = append(merged, append([]uint32(nil), vals...))
-			m[c.index] = uint8(len(buckets) - 1)
+		if len(merged) < clusters {
+			merged = append(merged, src.clone())
+			m[c.index] = uint8(len(merged) - 1)
 
 			continue
 		}
 
 		best, bestCost := 0, math.Inf(1)
 
-		for i, b := range buckets {
-			if cost := mergeCost(b, totals[i], hist, uint64(len(vals))); cost < bestCost {
+		for i := range merged {
+			if cost := mergeCost(&merged[i], hist, src.total); cost < bestCost {
 				best, bestCost = i, cost
 			}
 		}
 
-		for _, e := range hist {
-			buckets[best][e.value] += e.count
-		}
-
-		totals[best] += uint64(len(vals))
-		merged[best] = append(merged[best], vals...)
+		merged[best].merge(src)
 		m[c.index] = uint8(best)
 	}
 
@@ -261,27 +251,87 @@ func clusterContexts(values [][]uint32, limit int) ([]uint8, [][]uint32) {
 }
 
 type histEntry struct {
-	value uint32
-	count uint64
+	value, count uint32
 }
 
-func sparseHistogram(values []uint32) []histEntry {
-	sorted := make([]uint32, len(values))
-	copy(sorted, values)
-	slices.Sort(sorted)
+const denseValueCount = 16
 
-	var out []histEntry
+type valueCounts struct {
+	dense [denseValueCount]uint32
+	rest  map[uint32]uint32
+	total uint32
+}
 
-	for i := 0; i < len(sorted); {
-		j := i
+func (c *valueCounts) add(v uint32) {
+	c.total++
 
-		for j < len(sorted) && sorted[j] == sorted[i] {
-			j++
-		}
+	if v < denseValueCount {
+		c.dense[v]++
 
-		out = append(out, histEntry{sorted[i], uint64(j - i)})
-		i = j
+		return
 	}
+
+	if c.rest == nil {
+		c.rest = make(map[uint32]uint32, 8)
+	}
+
+	c.rest[v]++
+}
+
+func (c *valueCounts) count(v uint32) uint32 {
+	if v < denseValueCount {
+		return c.dense[v]
+	}
+
+	return c.rest[v]
+}
+
+func (c *valueCounts) merge(o *valueCounts) {
+	c.total += o.total
+
+	for v, n := range o.dense {
+		c.dense[v] += n
+	}
+
+	if len(o.rest) == 0 {
+		return
+	}
+
+	if c.rest == nil {
+		c.rest = make(map[uint32]uint32, len(o.rest))
+	}
+
+	for v, n := range o.rest {
+		c.rest[v] += n
+	}
+}
+
+func (c *valueCounts) clone() valueCounts {
+	out := valueCounts{dense: c.dense, total: c.total}
+
+	if len(c.rest) != 0 {
+		out.rest = maps.Clone(c.rest)
+	}
+
+	return out
+}
+
+func (c *valueCounts) entries(out []histEntry) []histEntry {
+	for v, n := range c.dense {
+		if n != 0 {
+			out = append(out, histEntry{uint32(v), n})
+		}
+	}
+
+	tail := len(out)
+
+	for v, n := range c.rest {
+		out = append(out, histEntry{v, n})
+	}
+
+	slices.SortFunc(out[tail:], func(a, b histEntry) int {
+		return cmp.Compare(a.value, b.value)
+	})
 
 	return out
 }
@@ -312,19 +362,21 @@ func xLogX(n uint64) float64 {
 	return float64(n) * log2Int(n)
 }
 
-func mergeCost(a map[uint32]uint64, at uint64, b []histEntry, bt uint64) float64 {
-	cost := xLogX(at+bt) - xLogX(at) - xLogX(bt)
+func mergeCost(a *valueCounts, b []histEntry, bt uint32) float64 {
+	at := uint64(a.total)
+
+	cost := xLogX(at+uint64(bt)) - xLogX(at) - xLogX(uint64(bt))
 
 	for _, e := range b {
-		if av, ok := a[e.value]; ok {
-			cost -= xLogX(av+e.count) - xLogX(av) - xLogX(e.count)
+		if av := uint64(a.count(e.value)); av != 0 {
+			cost -= xLogX(av+uint64(e.count)) - xLogX(av) - xLogX(uint64(e.count))
 		}
 	}
 
 	return cost
 }
 
-func buildHistograms(contextMap []uint8, values [][]uint32) (*histograms, [][]uint32) {
+func buildHistograms(contextMap []uint8, values []valueCounts) (*histograms, [][]uint32) {
 	h := &histograms{
 		contextMap:   contextMap,
 		logAlphaSize: huffmanMaxBits,
@@ -334,26 +386,29 @@ func buildHistograms(contextMap []uint8, values [][]uint32) (*histograms, [][]ui
 
 	counts := make([][]uint32, len(values))
 
-	var scratch uintCostScratch
+	var (
+		scratch uintCostScratch
+		hist    []histEntry
+	)
 
-	for i, vals := range values {
-		distinct, weights := valueHistogram(vals)
+	for i := range values {
+		hist = values[i].entries(hist[:0])
 
-		cfg := chooseUintConfig(distinct, weights, huffmanMaxBits, 1<<huffmanMaxBits-1, &scratch)
+		cfg := chooseUintConfig(hist, huffmanMaxBits, 1<<huffmanMaxBits-1, &scratch)
 		h.uintConfigs[i] = cfg
 
 		maxToken := uint32(0)
 
-		for _, v := range distinct {
-			token, _, _ := cfg.encode(v)
+		for _, e := range hist {
+			token, _, _ := cfg.encode(e.value)
 			maxToken = max(maxToken, token)
 		}
 
 		c := make([]uint32, maxToken+1)
 
-		for j, v := range distinct {
-			token, _, _ := cfg.encode(v)
-			c[token] += weights[j]
+		for _, e := range hist {
+			token, _, _ := cfg.encode(e.value)
+			c[token] += e.count
 		}
 
 		counts[i] = c

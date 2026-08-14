@@ -59,23 +59,35 @@ func writeSimplePrefix(w *bitWriter, alSize int, symbols []uint16, special bool)
 	}
 }
 
-func limitedLengths(counts []uint32, limit int) []uint8 {
-	type leaf struct {
-		w uint32
-		s int
-	}
+type prefixLeaf struct {
+	w uint32
+	s int
+}
 
+type prefixCoin struct {
+	w    uint64
+	used int
+}
+
+type prefixScratch struct {
+	leaves []prefixLeaf
+	levels [][]prefixCoin
+}
+
+func limitedLengths(counts []uint32, limit int, s *prefixScratch) []uint8 {
 	out := make([]uint8, len(counts))
 
-	var leaves []leaf
+	leaves := s.leaves[:0]
 
-	for s, c := range counts {
+	for sym, c := range counts {
 		if c > 0 {
-			leaves = append(leaves, leaf{c, s})
+			leaves = append(leaves, prefixLeaf{c, sym})
 		}
 	}
 
-	slices.SortFunc(leaves, func(a, b leaf) int {
+	s.leaves = leaves
+
+	slices.SortFunc(leaves, func(a, b prefixLeaf) int {
 		return cmp.Or(cmp.Compare(a.w, b.w), cmp.Compare(a.s, b.s))
 	})
 
@@ -92,21 +104,20 @@ func limitedLengths(counts []uint32, limit int) []uint8 {
 		return nil
 	}
 
-	type coin struct {
-		w    uint64
-		used int
+	for len(s.levels) < limit {
+		s.levels = append(s.levels, nil)
 	}
 
-	levels := make([][]coin, limit)
+	levels := s.levels[:limit]
 
 	for l := range levels {
-		var prev []coin
+		var prev []prefixCoin
 
 		if l > 0 {
 			prev = levels[l-1]
 		}
 
-		list := make([]coin, 0, n+len(prev)/2)
+		list := levels[l][:0]
 		i, j, used := 0, 0, 0
 
 		for i < n || j+1 < len(prev) {
@@ -126,7 +137,7 @@ func limitedLengths(counts []uint32, limit int) []uint8 {
 				j += 2
 			}
 
-			list = append(list, coin{w, used})
+			list = append(list, prefixCoin{w, used})
 		}
 
 		levels[l] = list
@@ -263,7 +274,7 @@ func codeLengthTokens(lengths []uint8) []codeLengthToken {
 	return out
 }
 
-func writeComplexPrefix(w *bitWriter, lengths []uint8) {
+func writeComplexPrefix(w *bitWriter, lengths []uint8, ps *prefixScratch) {
 	last := -1
 
 	for s, l := range lengths {
@@ -286,7 +297,7 @@ func writeComplexPrefix(w *bitWriter, lengths []uint8) {
 		counts[t.sym]++
 	}
 
-	clcl := limitedLengths(counts[:], 5)
+	clcl := limitedLengths(counts[:], 5, ps)
 	if clcl == nil {
 		w.setErr(ErrInvalid)
 
@@ -331,7 +342,7 @@ func writeComplexPrefix(w *bitWriter, lengths []uint8) {
 	}
 }
 
-func writePrefixCode(w *bitWriter, counts []uint32, alSize int) []prefixCode {
+func writePrefixCode(w *bitWriter, counts []uint32, alSize int, ps *prefixScratch) []prefixCode {
 	if alSize < 1 || alSize > len(counts) || alSize >= 1<<huffmanMaxBits {
 		w.setErr(ErrInvalid)
 
@@ -383,7 +394,7 @@ func writePrefixCode(w *bitWriter, counts []uint32, alSize int) []prefixCode {
 
 		writeSimplePrefix(w, alSize, used, special)
 	} else {
-		lengths = limitedLengths(counts, huffmanMaxBits)
+		lengths = limitedLengths(counts, huffmanMaxBits, ps)
 
 		if lengths == nil {
 			w.setErr(ErrInvalid)
@@ -391,7 +402,7 @@ func writePrefixCode(w *bitWriter, counts []uint32, alSize int) []prefixCode {
 			return nil
 		}
 
-		writeComplexPrefix(w, lengths)
+		writeComplexPrefix(w, lengths, ps)
 	}
 
 	codes, ok := canonicalPrefix(lengths)
@@ -446,8 +457,10 @@ func (c *huffmanCodes) write(w *bitWriter, counts [][]uint32) [][]prefixCode {
 
 	out := make([][]prefixCode, len(counts))
 
+	var scratch prefixScratch
+
 	for i, cnt := range counts {
-		out[i] = writePrefixCode(w, cnt, sizes[i])
+		out[i] = writePrefixCode(w, cnt, sizes[i], &scratch)
 	}
 
 	return out
