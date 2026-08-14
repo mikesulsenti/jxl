@@ -869,6 +869,84 @@ func TestHFMetadataRejectsQuant(t *testing.T) {
 	}
 }
 
+func quantizeBiasReference(c int, target float32, biases *[4]float32) int32 {
+	if target != target {
+		return 0
+	}
+
+	target = min(max(target, -1<<30), 1<<30)
+
+	near := int32(math.Round(float64(target)))
+	best := near
+	bestErr := float32(math.Inf(1))
+
+	for cand := near - 1; cand <= near+1; cand++ {
+		e := adjustQuantBias(c, cand, biases) - target
+
+		if e < 0 {
+			e = -e
+		}
+
+		if e < bestErr {
+			best, bestErr = cand, e
+		}
+	}
+
+	return best
+}
+
+func TestQuantizeBiasMatchesReference(t *testing.T) {
+	rng := rand.New(rand.NewPCG(53, 59))
+
+	biasSets := [][4]float32{
+		{0.9453, 0.9299, 0.9501, 0.145},
+		{0.3, 0.62, 0.94, 0.5},
+		{0.001, 1, 0.5, 2},
+		{0, 0, 0, 0},
+	}
+
+	targets := []float32{
+		0, -0, 0.5, -0.5, 1.5, -1.5, 2.5, -2.5, 0.49999997, -0.49999997,
+		1, -1, 1 << 23, -(1 << 23), (1 << 23) + 1,
+		1 << 30, -1 << 30,
+		1 << 31, float32(math.Inf(1)), float32(math.Inf(-1)),
+		float32(math.NaN()),
+	}
+
+	for i := range 400000 {
+		var v float32
+
+		switch i % 4 {
+		case 0:
+			v = float32(rng.NormFloat64()) * 4
+		case 1:
+			v = float32(rng.NormFloat64()) * 1000
+		case 2:
+			v = float32(rng.IntN(2000)-1000) + 0.5
+		default:
+			v = float32(rng.NormFloat64()) * 1e6
+		}
+
+		targets = append(targets, v)
+	}
+
+	for _, biases := range biasSets {
+		b := biases
+
+		for _, v := range targets {
+			for c := range 3 {
+				want := quantizeBiasReference(c, v, &b)
+
+				if got := quantizeBias(c, v, &b); got != want {
+					t.Fatalf("quantizeBias(%d, %v, %v) is %d, want %d", c, v, b, got, want)
+				}
+			}
+		}
+	}
+
+	t.Logf("%d targets x %d bias sets x 3 channels agree exactly", len(targets), len(biasSets))
+}
+
 func TestVarDCTBodyRoundTrip(t *testing.T) {
 	rng := rand.New(rand.NewPCG(83, 89))
 

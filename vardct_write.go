@@ -2,6 +2,21 @@ package jxl
 
 import "math"
 
+func roundHalfAway(v float32) int32 {
+	t := int32(v)
+	d := v - float32(t)
+
+	if d >= 0.5 {
+		return t + 1
+	}
+
+	if d <= -0.5 {
+		return t - 1
+	}
+
+	return t
+}
+
 func quantizeBias(c int, target float32, biases *[4]float32) int32 {
 	if target != target {
 		return 0
@@ -9,20 +24,17 @@ func quantizeBias(c int, target float32, biases *[4]float32) int32 {
 
 	target = min(max(target, -1<<30), 1<<30)
 
-	near := int32(math.Round(float64(target)))
-	best := near
-	bestErr := float32(math.Inf(1))
+	near := roundHalfAway(target)
 
-	for cand := near - 1; cand <= near+1; cand++ {
-		e := adjustQuantBias(c, cand, biases) - target
+	best := near - 1
+	bestErr := absf(adjustQuantBias(c, best, biases) - target)
 
-		if e < 0 {
-			e = -e
-		}
+	if e := absf(adjustQuantBias(c, near, biases) - target); e < bestErr {
+		best, bestErr = near, e
+	}
 
-		if e < bestErr {
-			best, bestErr = cand, e
-		}
+	if e := absf(adjustQuantBias(c, near+1, biases) - target); e < bestErr {
+		best = near + 1
 	}
 
 	return best
