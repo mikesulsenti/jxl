@@ -122,10 +122,17 @@ type uintCostScratch struct {
 
 const tableBitsPerSymbol = 3
 
-func chooseUintConfig(distinct, weights []uint32, logAlphaSize, maxAlphabet int) hybridUint {
+func chooseUintConfig(distinct, weights []uint32, logAlphaSize, maxAlphabet int,
+	s *uintCostScratch,
+) hybridUint {
 	best := newHybridUint(uint32(logAlphaSize), 0, 0)
 	bestCost := math.Inf(1)
-	s := &uintCostScratch{tokens: make([]uint32, maxAlphabet)}
+
+	if cap(s.tokens) < maxAlphabet {
+		s.tokens = make([]uint32, maxAlphabet)
+	}
+
+	s.tokens = s.tokens[:maxAlphabet]
 
 	for se := 0; se <= logAlphaSize; se++ {
 		for msb := 0; msb <= se; msb++ {

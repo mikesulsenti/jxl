@@ -334,10 +334,12 @@ func buildHistograms(contextMap []uint8, values [][]uint32) (*histograms, [][]ui
 
 	counts := make([][]uint32, len(values))
 
+	var scratch uintCostScratch
+
 	for i, vals := range values {
 		distinct, weights := valueHistogram(vals)
 
-		cfg := chooseUintConfig(distinct, weights, huffmanMaxBits, 1<<huffmanMaxBits-1)
+		cfg := chooseUintConfig(distinct, weights, huffmanMaxBits, 1<<huffmanMaxBits-1, &scratch)
 		h.uintConfigs[i] = cfg
 
 		maxToken := uint32(0)

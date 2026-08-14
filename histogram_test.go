@@ -407,7 +407,7 @@ func TestUintConfigChoice(t *testing.T) {
 			values := randomValues(rng, 4000, kind)
 			distinct, weights := valueHistogram(values)
 
-			chosen := chooseUintConfig(distinct, weights, huffmanMaxBits, 1<<huffmanMaxBits-1)
+			chosen := chooseUintConfig(distinct, weights, huffmanMaxBits, 1<<huffmanMaxBits-1, &uintCostScratch{})
 
 			got, ok := encodedBits(t, chosen, values)
 			if !ok {
