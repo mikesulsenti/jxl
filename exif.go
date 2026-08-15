@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"slices"
 )
 
 // ErrNoExif is returned when the file carries no Exif box.
@@ -74,11 +73,12 @@ func RawExif(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 
-	if c.exif == nil {
-		return nil, missing(c, "Exif", ErrNoExif)
+	exif, err := c.metadata("Exif", ErrNoExif)
+	if err != nil {
+		return nil, err
 	}
 
-	tiff := exifTIFF(c.exif)
+	tiff := exifTIFF(exif)
 	if tiff == nil {
 		return nil, ErrNoExif
 	}
@@ -94,22 +94,33 @@ func RawXMP(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 
-	if c.xmp == nil {
-		return nil, missing(c, "xml ", ErrNoXMP)
-	}
-
-	return c.xmp, nil
+	return c.metadata("xml ", ErrNoXMP)
 }
 
-// missing reports why a box is absent: Brotli-compressed metadata is present
-// but unreadable, anything else is simply not there.
-func missing(c *container, typ string, absent error) error {
-	if slices.Contains(c.compressed, typ) {
-		return ErrUnsupported
+// metadata returns a box, decompressing it when the file stored it brotli
+// compressed.
+func (c *container) metadata(typ string, absent error) ([]byte, error) {
+	switch typ {
+	case "Exif":
+		if c.exif != nil {
+			return c.exif, nil
+		}
+	case "xml ":
+		if c.xmp != nil {
+			return c.xmp, nil
+		}
 	}
 
-	return absent
+	body, ok := c.compressed[typ]
+	if !ok {
+		return nil, absent
+	}
+
+	return brotliDecode(body, maxMetadataSize)
 }
+
+// Largest metadata box this package will decompress.
+const maxMetadataSize = 1 << 26
 
 // readBoxes reads the container boxes of a file. A bare codestream carries no
 // metadata and gives an empty set rather than an error.

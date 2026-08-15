@@ -264,8 +264,8 @@ func TestParseContainerMetadata(t *testing.T) {
 	if string(c.jumb) != "jumbf" {
 		t.Errorf("jumb = %q", c.jumb)
 	}
-	if len(c.compressed) != 1 || c.compressed[0] != "xml " {
-		t.Errorf("compressed = %q, want [\"xml \"]", c.compressed)
+	if len(c.compressed) != 1 || string(c.compressed["xml "]) != "compressed" {
+		t.Errorf("compressed = %q, want one xml box", c.compressed)
 	}
 }
 
@@ -309,8 +309,10 @@ func TestContainerCorpus(t *testing.T) {
 				t.Fatalf("extracted codestream starts %x, want %x",
 					c.codestream[:min(2, len(c.codestream))], sigCodestream)
 			}
-			if len(c.compressed) > 0 {
-				t.Logf("brotli-compressed boxes left undecoded: %q", c.compressed)
+			for typ, body := range c.compressed {
+				if _, err := brotliDecode(body, maxMetadataSize); err != nil {
+					t.Errorf("brob %q: %v", typ, err)
+				}
 			}
 		})
 	}
@@ -664,6 +666,60 @@ func TestExifXMP(t *testing.T) {
 	}
 }
 
+// brotliStored wraps bytes in a brotli stream of one uncompressed meta-block,
+// which needs no compressor to build.
+func brotliStored(data []byte) []byte {
+	var w bitWriter
+
+	w.bit(false)
+	w.bit(false)
+	w.bits(2, 0)
+	w.bits(16, uint64(len(data)-1))
+	w.bit(true)
+	w.zeroPad()
+
+	for _, b := range data {
+		w.bits(8, uint64(b))
+	}
+
+	w.bit(true)
+	w.bit(true)
+
+	return w.bytes()
+}
+
+// TestExifCompressed reads metadata out of the brob boxes libjxl writes by
+// default, which carry the payload brotli compressed.
+func TestExifCompressed(t *testing.T) {
+	tiff := sampleTIFF()
+
+	file := bytes.Join([][]byte{
+		[]byte(sigContainer),
+		ftyp(),
+		box("brob", []byte("Exif"), brotliStored(append(be32(0), tiff...))),
+		box("brob", []byte("xml "), brotliStored([]byte("<x:xmpmeta/>"))),
+		box("jxlc", []byte("\xff\x0acodestream")),
+	}, nil)
+
+	e, err := DecodeExif(bytes.NewReader(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if e.Orientation != 6 || e.Make != "Canon" {
+		t.Fatalf("orientation %d make %q", e.Orientation, e.Make)
+	}
+
+	xmp, err := RawXMP(bytes.NewReader(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(xmp) != "<x:xmpmeta/>" {
+		t.Fatalf("xmp is %q", xmp)
+	}
+}
+
 func TestExifMissing(t *testing.T) {
 	bare := []byte("\xff\x0acodestream")
 	plain := bytes.Join([][]byte{[]byte(sigContainer), ftyp(), box("jxlc", bare)}, nil)
@@ -671,8 +727,8 @@ func TestExifMissing(t *testing.T) {
 	brob := bytes.Join([][]byte{
 		[]byte(sigContainer),
 		ftyp(),
-		box("brob", []byte("Exif"), []byte("compressed")),
-		box("brob", []byte("xml "), []byte("compressed")),
+		box("brob", []byte("Exif"), []byte("not brotli")),
+		box("brob", []byte("xml "), []byte("not brotli")),
 		box("jxlc", bare),
 	}, nil)
 
@@ -683,7 +739,6 @@ func TestExifMissing(t *testing.T) {
 	}{
 		{"bare codestream", bare, ErrNoExif, ErrNoXMP},
 		{"no metadata boxes", plain, ErrNoExif, ErrNoXMP},
-		{"brotli compressed", brob, ErrUnsupported, ErrUnsupported},
 	} {
 		if _, err := DecodeExif(bytes.NewReader(tc.data)); !errors.Is(err, tc.exif) {
 			t.Fatalf("%s: DecodeExif gave %v, want %v", tc.name, err, tc.exif)
@@ -692,6 +747,10 @@ func TestExifMissing(t *testing.T) {
 		if _, err := RawXMP(bytes.NewReader(tc.data)); !errors.Is(err, tc.xmp) {
 			t.Fatalf("%s: RawXMP gave %v, want %v", tc.name, err, tc.xmp)
 		}
+	}
+
+	if _, err := DecodeExif(bytes.NewReader(brob)); err == nil {
+		t.Fatal("a brob box that is not brotli was accepted")
 	}
 
 	if _, err := DecodeExif(bytes.NewReader([]byte("not a jxl"))); err == nil {

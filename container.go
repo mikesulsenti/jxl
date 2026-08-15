@@ -11,7 +11,7 @@ type container struct {
 	xmp        []byte
 	jumb       []byte
 	level      int
-	compressed []string
+	compressed map[string][]byte
 }
 
 type jxlpChunk struct {
@@ -139,7 +139,11 @@ func readContainer(data []byte, partial bool) (*container, error) {
 				return nil, ErrInvalid
 			}
 
-			c.compressed = append(c.compressed, string(body[:4]))
+			if c.compressed == nil {
+				c.compressed = make(map[string][]byte)
+			}
+
+			c.compressed[string(body[:4])] = body[4:]
 
 		}
 	}
