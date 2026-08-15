@@ -601,3 +601,62 @@ func TestEncodeCorpus(t *testing.T) {
 
 	t.Logf("%d images encoded to %d bytes, djxl read them all: %v", total, size, djxl != "")
 }
+
+// TestExifCorpus reads the metadata of every corpus file that carries any,
+// against libjxl's own writers rather than boxes this package built.
+func TestExifCorpus(t *testing.T) {
+	root := corpusRoot(t)
+
+	var withExif, withXMP, oriented, compressed, total int
+
+	for _, sub := range corpusSubdirs {
+		files, err := filepath.Glob(filepath.Join(root, sub, "*.jxl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, path := range files {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			name := sub + "/" + filepath.Base(path)
+			total++
+
+			e, err := DecodeExif(bytes.NewReader(data))
+
+			switch {
+			case err == nil:
+				withExif++
+
+				if e.Orientation < 1 || e.Orientation > 8 {
+					t.Errorf("%s: orientation %d", name, e.Orientation)
+				}
+
+				if e.Orientation != 1 {
+					oriented++
+				}
+			case errors.Is(err, ErrUnsupported):
+				compressed++
+			case !errors.Is(err, ErrNoExif):
+				t.Errorf("%s: %v", name, err)
+			}
+
+			switch _, err := RawXMP(bytes.NewReader(data)); {
+			case err == nil:
+				withXMP++
+			case errors.Is(err, ErrUnsupported):
+			case !errors.Is(err, ErrNoXMP):
+				t.Errorf("%s: xmp: %v", name, err)
+			}
+		}
+	}
+
+	if total == 0 {
+		t.Skip("no corpus files present")
+	}
+
+	t.Logf("%d files: %d with exif (%d oriented), %d with xmp, %d brotli compressed",
+		total, withExif, oriented, withXMP, compressed)
+}

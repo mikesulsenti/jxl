@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -479,5 +480,221 @@ func TestFrameSizeLimit(t *testing.T) {
 		if !errors.Is(err, tc.want) {
 			t.Fatalf("limit %d over %d pixels gave %v, want %v", tc.limit, area, err, tc.want)
 		}
+	}
+}
+
+type tiffTag struct {
+	tag, typ uint16
+	count    uint32
+	data     []byte
+}
+
+func tiffLen(tags []tiffTag) int {
+	n := 2 + len(tags)*12 + 4
+	for _, t := range tags {
+		if len(t.data) > 4 {
+			n += len(t.data)
+		}
+	}
+
+	return n
+}
+
+// tiffIFD encodes an IFD placed at base, pointing values too big to inline at
+// the overflow area that follows the directory.
+func tiffIFD(base int, tags []tiffTag) []byte {
+	over := base + 2 + len(tags)*12 + 4
+
+	dir := binary.BigEndian.AppendUint16(nil, uint16(len(tags)))
+	var extra []byte
+	for _, t := range tags {
+		dir = binary.BigEndian.AppendUint16(dir, t.tag)
+		dir = binary.BigEndian.AppendUint16(dir, t.typ)
+		dir = binary.BigEndian.AppendUint32(dir, t.count)
+		if len(t.data) > 4 {
+			dir = binary.BigEndian.AppendUint32(dir, uint32(over+len(extra)))
+			extra = append(extra, t.data...)
+		} else {
+			v := make([]byte, 4)
+			copy(v, t.data)
+			dir = append(dir, v...)
+		}
+	}
+	dir = binary.BigEndian.AppendUint32(dir, 0)
+
+	return append(dir, extra...)
+}
+
+func be16(v uint16) []byte { return binary.BigEndian.AppendUint16(nil, v) }
+func be32(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
+func rat(n, d uint32) []byte {
+	return append(be32(n), be32(d)...)
+}
+
+// sampleTIFF builds the payload the Exif tests read back.
+func sampleTIFF() []byte {
+	gps := []tiffTag{
+		{tagGPSLatitudeRef, typeASCIIString, 2, []byte("N\x00")},
+		{tagGPSLatitude, typeUnsignedRational, 3, slices.Concat(rat(48, 1), rat(51, 1), rat(1234, 100))},
+		{tagGPSLongitudeRef, typeASCIIString, 2, []byte("W\x00")},
+		{tagGPSLongitude, typeUnsignedRational, 3, slices.Concat(rat(2, 1), rat(21, 1), rat(50, 100))},
+		{tagGPSAltitudeRef, typeUnsignedByte, 1, []byte{1}},
+		{tagGPSAltitude, typeUnsignedRational, 1, rat(3500, 100)},
+	}
+	sub := []tiffTag{
+		{tagExposureTime, typeUnsignedRational, 1, rat(1, 250)},
+		{tagFNumber, typeUnsignedRational, 1, rat(56, 10)},
+		{tagISOSpeedRatings, typeUnsignedShort, 1, be16(800)},
+		{tagDateTimeOriginal, typeASCIIString, 20, []byte("2024:03:01 09:15:00\x00")},
+		{tagFlash, typeUnsignedShort, 1, be16(9)},
+		{tagFocalLength, typeUnsignedRational, 1, rat(350, 10)},
+	}
+
+	ifd0Base := 8
+	var ifd0 []tiffTag
+	build := func() []byte {
+		subBase := ifd0Base + tiffLen(ifd0)
+		gpsBase := subBase + tiffLen(sub)
+
+		return slices.Concat(
+			[]byte("MM\x00\x2a"), be32(uint32(ifd0Base)),
+			tiffIFD(ifd0Base, ifd0),
+			tiffIFD(subBase, sub),
+			tiffIFD(gpsBase, gps),
+		)
+	}
+
+	ifd0 = []tiffTag{
+		{tagImageWidth, typeUnsignedLong, 1, be32(1600)},
+		{tagImageLength, typeUnsignedShort, 1, be16(900)},
+		{tagMake, typeASCIIString, 6, []byte("Canon\x00")},
+		{tagModel, typeASCIIString, 8, []byte("EOS 5D\x00\x00")},
+		{tagSoftware, typeASCIIString, 8, []byte("jxl\x00\x00\x00")},
+		{tagDateTime, typeASCIIString, 20, []byte("2024:03:02 11:00:00\x00")},
+		{tagArtist, typeASCIIString, 6, []byte("milan\x00")},
+		{tagCopyright, typeASCIIString, 4, []byte("CC0\x00")},
+		{tagOrientation, typeUnsignedShort, 1, be16(6)},
+		{tagExifIFDPointer, typeUnsignedLong, 1, nil},
+		{tagGPSIFDPointer, typeUnsignedLong, 1, nil},
+	}
+	subBase := ifd0Base + tiffLen(ifd0)
+	ifd0[len(ifd0)-2].data = be32(uint32(subBase))
+	ifd0[len(ifd0)-1].data = be32(uint32(subBase + tiffLen(sub)))
+
+	return build()
+}
+
+// exifFile wraps a TIFF payload in the boxes a JPEG XL file carries.
+func exifFile(tiff []byte, offset uint32, extra ...[]byte) []byte {
+	pad := make([]byte, offset)
+
+	parts := [][]byte{
+		[]byte(sigContainer),
+		ftyp(),
+		box("Exif", be32(offset), pad, tiff),
+		box("xml ", []byte("<x:xmpmeta/>")),
+	}
+
+	parts = append(parts, extra...)
+	parts = append(parts, box("jxlc", []byte("\xff\x0acodestream")))
+
+	return bytes.Join(parts, nil)
+}
+
+func TestExif(t *testing.T) {
+	e, err := DecodeExif(bytes.NewReader(exifFile(sampleTIFF(), 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Indexed so the degrees round exactly as the parser rounds them.
+	dms := []float64{48, 51, 12.34, 2, 21, 0.5}
+
+	want := Exif{
+		Orientation: 6, Width: 1600, Height: 900,
+		Make: "Canon", Model: "EOS 5D", Software: "jxl",
+		DateTime: "2024:03:02 11:00:00", DateTimeOriginal: "2024:03:01 09:15:00",
+		ExposureTime: 1.0 / 250, FNumber: 5.6, ISOSpeed: 800, FocalLength: 35, Flash: 9,
+		GPSLatitude:  dms[0] + dms[1]/60 + dms[2]/3600,
+		GPSLongitude: -(dms[3] + dms[4]/60 + dms[5]/3600),
+		GPSAltitude:  -35,
+		Copyright:    "CC0", Artist: "milan",
+	}
+
+	if *e != want {
+		t.Fatalf("got %+v\nwant %+v", *e, want)
+	}
+}
+
+// TestExifTIFFOffset covers the exif_tiff_header_offset, including a writer
+// that gets it wrong, which the scan recovers from.
+func TestExifTIFFOffset(t *testing.T) {
+	for _, offset := range []uint32{0, 6, 64} {
+		e, err := DecodeExif(bytes.NewReader(exifFile(sampleTIFF(), offset)))
+		if err != nil {
+			t.Fatalf("offset %d: %v", offset, err)
+		}
+
+		if e.Orientation != 6 {
+			t.Fatalf("offset %d: orientation %d", offset, e.Orientation)
+		}
+	}
+
+	file := exifFile(sampleTIFF(), 6)
+	binary.BigEndian.PutUint32(file[len(sigContainer)+len(ftyp())+8:], 999)
+
+	e, err := DecodeExif(bytes.NewReader(file))
+	if err != nil {
+		t.Fatalf("wrong offset: %v", err)
+	}
+
+	if e.Orientation != 6 {
+		t.Fatalf("wrong offset: orientation %d", e.Orientation)
+	}
+}
+
+func TestExifXMP(t *testing.T) {
+	xmp, err := RawXMP(bytes.NewReader(exifFile(sampleTIFF(), 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(xmp) != "<x:xmpmeta/>" {
+		t.Fatalf("xmp is %q", xmp)
+	}
+}
+
+func TestExifMissing(t *testing.T) {
+	bare := []byte("\xff\x0acodestream")
+	plain := bytes.Join([][]byte{[]byte(sigContainer), ftyp(), box("jxlc", bare)}, nil)
+
+	brob := bytes.Join([][]byte{
+		[]byte(sigContainer),
+		ftyp(),
+		box("brob", []byte("Exif"), []byte("compressed")),
+		box("brob", []byte("xml "), []byte("compressed")),
+		box("jxlc", bare),
+	}, nil)
+
+	for _, tc := range []struct {
+		name      string
+		data      []byte
+		exif, xmp error
+	}{
+		{"bare codestream", bare, ErrNoExif, ErrNoXMP},
+		{"no metadata boxes", plain, ErrNoExif, ErrNoXMP},
+		{"brotli compressed", brob, ErrUnsupported, ErrUnsupported},
+	} {
+		if _, err := DecodeExif(bytes.NewReader(tc.data)); !errors.Is(err, tc.exif) {
+			t.Fatalf("%s: DecodeExif gave %v, want %v", tc.name, err, tc.exif)
+		}
+
+		if _, err := RawXMP(bytes.NewReader(tc.data)); !errors.Is(err, tc.xmp) {
+			t.Fatalf("%s: RawXMP gave %v, want %v", tc.name, err, tc.xmp)
+		}
+	}
+
+	if _, err := DecodeExif(bytes.NewReader([]byte("not a jxl"))); err == nil {
+		t.Fatal("a file that is not JPEG XL was accepted")
 	}
 }

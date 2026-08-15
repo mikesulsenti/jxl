@@ -2,6 +2,11 @@
 //
 // Decoding covers both Modular and VarDCT codestreams. Encoding writes a
 // single lossy VarDCT frame from sRGB input.
+//
+// [DecodeExif] parses the Exif metadata of a file, while [RawExif] and
+// [RawXMP] return the payloads whole. All three report [ErrNoExif] or
+// [ErrNoXMP] when the file carries no such box, and [ErrUnsupported] when it
+// carries one Brotli compressed.
 package jxl
 
 import (
