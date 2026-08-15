@@ -31,7 +31,7 @@ Lossy, within 1.02x to 1.15x of `cjxl` at matched ssimulacra2. Input is treated 
 Lossless and lossy, 8 to 32-bit, grayscale and color, alpha, animation, chroma subsampling, patches,
 splines, noise, progressive files, embedded ICC profiles, Exif and XMP.
 
-Not implemented: color management through embedded ICC profiles, JPEG reconstruction, and Brotli-compressed metadata boxes.
+Not implemented: color management through embedded ICC profiles and JPEG reconstruction.
 
 ### License
 
