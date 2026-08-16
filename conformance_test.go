@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"cmp"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/png"
 	"math"
@@ -366,6 +368,191 @@ func TestConformanceICC(t *testing.T) {
 			t.Logf("%d bytes, byte-exact", len(want))
 		})
 	}
+}
+
+// apngFrames rebuilds every frame of an APNG as a standalone PNG, so libjxl's
+// own decode of an animation can be read back with the standard library.
+func apngFrames(t *testing.T, path string) []image.Image {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		header []byte
+		before [][]byte
+		frames []image.Image
+		parts  [][]byte
+		rect   image.Rectangle
+	)
+
+	flush := func() {
+		if len(parts) == 0 {
+			return
+		}
+
+		var buf bytes.Buffer
+
+		buf.Write(data[:8])
+
+		ihdr := slices.Clone(header)
+		binary.BigEndian.PutUint32(ihdr[0:], uint32(rect.Dx()))
+		binary.BigEndian.PutUint32(ihdr[4:], uint32(rect.Dy()))
+
+		writeChunk(&buf, "IHDR", ihdr)
+
+		for _, c := range before {
+			writeChunk(&buf, string(c[:4]), c[4:])
+		}
+
+		for _, p := range parts {
+			writeChunk(&buf, "IDAT", p)
+		}
+
+		writeChunk(&buf, "IEND", nil)
+
+		img, err := png.Decode(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			t.Fatalf("%s: frame %d: %v", path, len(frames), err)
+		}
+
+		frames = append(frames, img)
+		parts = nil
+	}
+
+	for i := 8; i+8 <= len(data); {
+		n := int(binary.BigEndian.Uint32(data[i:]))
+		typ := string(data[i+4 : i+8])
+		body := data[i+8 : i+8+n]
+
+		switch typ {
+		case "IHDR":
+			header = slices.Clone(body)
+		case "PLTE", "tRNS":
+			before = append(before, append([]byte(typ), body...))
+		case "fcTL":
+			flush()
+
+			rect = image.Rect(0, 0, int(binary.BigEndian.Uint32(body[4:])),
+				int(binary.BigEndian.Uint32(body[8:])))
+		case "IDAT":
+			parts = append(parts, slices.Clone(body))
+		case "fdAT":
+			parts = append(parts, slices.Clone(body[4:]))
+		}
+
+		i += 12 + n
+	}
+
+	flush()
+
+	return frames
+}
+
+func writeChunk(buf *bytes.Buffer, typ string, body []byte) {
+	var head [4]byte
+
+	binary.BigEndian.PutUint32(head[:], uint32(len(body)))
+	buf.Write(head[:])
+
+	crc := crc32.NewIEEE()
+
+	buf.WriteString(typ)
+	crc.Write([]byte(typ))
+
+	buf.Write(body)
+	crc.Write(body)
+
+	binary.BigEndian.PutUint32(head[:], crc.Sum32())
+	buf.Write(head[:])
+}
+
+// TestAnimationCorpus checks every frame of every animated corpus file against
+// libjxl, which a first-frame comparison cannot do.
+func TestAnimationCorpus(t *testing.T) {
+	root := corpusRoot(t)
+
+	djxl, err := exec.LookPath("djxl")
+	if err != nil {
+		t.Skip("djxl is not on the path")
+	}
+
+	dir := t.TempDir()
+	checked, total := 0, 0
+
+	for _, sub := range corpusSubdirs {
+		files, err := filepath.Glob(filepath.Join(root, sub, "*.jxl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, path := range files {
+			name := sub + "/" + filepath.Base(path)
+
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ours, err := DecodeAll(f, Options{Level: 10})
+			f.Close()
+
+			if err != nil || len(ours.Image) < 2 {
+				continue
+			}
+
+			out := filepath.Join(dir, "frames.apng")
+
+			if o, err := exec.Command(djxl, path, out).CombinedOutput(); err != nil {
+				t.Errorf("%s: djxl gave %v\n%s", name, err, o)
+
+				continue
+			}
+
+			theirs := apngFrames(t, out)
+
+			if len(theirs) != len(ours.Image) {
+				t.Errorf("%s: %d frames, libjxl gives %d", name, len(ours.Image), len(theirs))
+
+				continue
+			}
+
+			checked++
+
+			for i := range theirs {
+				worst := 0.0
+				b := theirs[i].Bounds()
+
+				for y := range b.Dy() {
+					for x := range b.Dx() {
+						r1, g1, b1, a1 := ours.Image[i].At(x, y).RGBA()
+						r2, g2, b2, a2 := theirs[i].At(b.Min.X+x, b.Min.Y+y).RGBA()
+
+						for _, d := range [4]float64{
+							float64(r1) - float64(r2), float64(g1) - float64(g2),
+							float64(b1) - float64(b2), float64(a1) - float64(a2),
+						} {
+							worst = math.Max(worst, math.Abs(d)/65535)
+						}
+					}
+				}
+
+				total++
+
+				if worst > corpusTolerance {
+					t.Errorf("%s: frame %d differs from libjxl by %g", name, i, worst)
+				}
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Skip("no animations in the corpus")
+	}
+
+	t.Logf("%d animations, %d frames within %g of libjxl", checked, total, corpusTolerance)
 }
 
 func corpusRoot(t *testing.T) string {
