@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"io"
 	"math"
+	"slices"
 )
 
 type refFrame struct {
@@ -701,10 +702,10 @@ func (d *decoder) applyEPF(f *frame, planes [][]float32, w, h, color int) error 
 
 	switch {
 	case color >= 3:
-		e.planes = planes[:3]
+		e.planes = slices.Clone(planes[:3])
 		e.scales = rf.epfChannelScale[:]
 	case color == 1:
-		e.planes = planes[:1]
+		e.planes = slices.Clone(planes[:1])
 		e.scales = []float32{
 			rf.epfChannelScale[0] + rf.epfChannelScale[1] + rf.epfChannelScale[2],
 		}

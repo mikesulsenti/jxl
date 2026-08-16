@@ -3,6 +3,7 @@ package jxl
 import (
 	"math"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -627,5 +628,61 @@ func TestCbrtAsmMatchesGo(t *testing.T) {
 
 	if total != 0 {
 		t.Fatalf("%d inputs differ between the kernel and Go", total)
+	}
+}
+
+func (a *arena) holds(b []float32) bool {
+	for _, f := range a.free {
+		if &f[0] == &b[0] {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestApplyEPFKeepsPlanes guards the ownership of the planes the filter swaps:
+// an odd number of passes used to hand the live buffers back to the arena.
+func TestApplyEPFKeepsPlanes(t *testing.T) {
+	r := rand.New(rand.NewPCG(41, 43))
+
+	for _, iters := range []uint32{1, 2, 3} {
+		w, h := 40, 24
+
+		var d decoder
+
+		d.hdr.meta = defaultImageMetadata()
+
+		f := &frame{}
+		f.hdr.filter = defaultRestorationFilter()
+		f.hdr.filter.epfIters = iters
+		f.hdr.filter.epfSigmaForModular = 100
+
+		planes := make([][]float32, 3)
+		before := make([][]float32, 3)
+
+		for c := range planes {
+			planes[c] = d.arena.getDirty(w * h)
+
+			for i := range planes[c] {
+				planes[c][i] = r.Float32()
+			}
+
+			before[c] = slices.Clone(planes[c])
+		}
+
+		if err := d.applyEPF(f, planes, w, h, 3); err != nil {
+			t.Fatalf("%d iterations: %v", iters, err)
+		}
+
+		for c, p := range planes {
+			if d.arena.holds(p) {
+				t.Fatalf("%d iterations: plane %d was returned to the arena", iters, c)
+			}
+
+			if slices.Equal(p, before[c]) {
+				t.Fatalf("%d iterations: plane %d is unfiltered", iters, c)
+			}
+		}
 	}
 }
