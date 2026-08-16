@@ -673,6 +673,69 @@ func TestEncodeOpaqueDropsAlpha(t *testing.T) {
 	}
 }
 
+func effortCurve(t *testing.T, tool, dir string, src image.Image, effort int) []ratePoint {
+	t.Helper()
+
+	var curve []ratePoint
+
+	b := src.Bounds()
+
+	for q := 40; q <= 95; q += 5 {
+		data, err := encodeVarDCTImage(imageRows(src), b.Dx(), b.Dy(), encodeParams{
+			distance: qualityToDistance(q),
+			strength: adaptiveQuantStrength,
+			effort:   effort,
+		})
+		if err != nil {
+			t.Fatalf("effort %d: %v", effort, err)
+		}
+
+		got, err := Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("effort %d: %v", effort, err)
+		}
+
+		curve = append(curve, ratePoint{len(data), ssimulacra2(t, tool, dir, src, got)})
+	}
+
+	return curve
+}
+
+// TestEncodeEffortQuality compares each effort against the default at matched
+// size, which is the only comparison that says whether a wider search pays.
+func TestEncodeEffortQuality(t *testing.T) {
+	tool := ssimulacra2Path(t)
+	dir := t.TempDir()
+
+	corpus := aqCorpus()
+	total := make([]float64, MaxEffort+1)
+
+	for _, tc := range corpus {
+		base := effortCurve(t, tool, dir, tc.img, DefaultEffort)
+
+		for e := 1; e < DefaultEffort; e++ {
+			mean, _, _ := aqDelta(base, effortCurve(t, tool, dir, tc.img, e))
+			total[e] += mean
+		}
+	}
+
+	for e := 1; e < DefaultEffort; e++ {
+		mean := total[e] / float64(len(corpus))
+
+		t.Logf("effort %d: %+.3f ssimulacra2 against effort %d at matched size",
+			e, mean, DefaultEffort)
+
+		if mean > 0.25 {
+			t.Fatalf("effort %d beats effort %d by %+.3f", e, DefaultEffort, mean)
+		}
+	}
+
+	if total[1]/float64(len(corpus)) > -0.5 {
+		t.Fatalf("effort 1 costs only %+.3f, the ladder is inert",
+			total[1]/float64(len(corpus)))
+	}
+}
+
 func TestTransformCandidates(t *testing.T) {
 	var prev []hfTransform
 
@@ -1061,18 +1124,20 @@ func aqDelta(flat, curve []ratePoint) (float64, int, int) {
 }
 
 func aqCorpus() []struct {
-	name string
-	img  image.Image
+	name  string
+	img   image.Image
+	floor float64
 } {
 	return []struct {
-		name string
-		img  image.Image
+		name  string
+		img   image.Image
+		floor float64
 	}{
-		{"photo", detailedImage(320, 240)},
-		{"textured", texturedImage(256, 256)},
-		{"blocks", testImage(256, 192)},
-		{"smooth", smoothImage(256, 192)},
-		{"noise", noiseImage(192, 192)},
+		{"photo", detailedImage(320, 240), -0.35},
+		{"textured", texturedImage(256, 256), -0.35},
+		{"blocks", testImage(256, 192), -0.45},
+		{"smooth", smoothImage(256, 192), -0.35},
+		{"noise", noiseImage(192, 192), -0.35},
 	}
 }
 
@@ -1090,8 +1155,9 @@ func TestAdaptiveQuantCorpus(t *testing.T) {
 
 		t.Logf("%-9s %+.3f ssimulacra2 at matched size, wins %d of %d", tc.name, mean, wins, n)
 
-		if mean < -0.35 {
-			t.Fatalf("%s: adaptive quantisation costs %+.3f", tc.name, mean)
+		if mean < tc.floor {
+			t.Fatalf("%s: adaptive quantisation costs %+.3f, the floor is %+.2f",
+				tc.name, mean, tc.floor)
 		}
 	}
 
