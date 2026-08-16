@@ -248,11 +248,11 @@ func TestModularRejected(t *testing.T) {
 
 	src.encodeStream(&w, &groupHeader{
 		wp:         defaultWeightedHeader(),
-		transforms: []modTransform{{id: xformRCT, rctType: 6}},
+		transforms: []modTransform{{id: xformSqueeze}},
 	}, &maTree{nodes: serializeTree(&treeSpec{property: -1, predictor: predZero, mul: 1})}, 0)
 
 	if w.err() != ErrUnsupported {
-		t.Fatalf("a transform gave %v, want %v", w.err(), ErrUnsupported)
+		t.Fatalf("a squeeze transform gave %v, want %v", w.err(), ErrUnsupported)
 	}
 
 	var w2 bitWriter

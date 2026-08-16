@@ -464,6 +464,27 @@ func TestCorpus(t *testing.T) {
 	}
 }
 
+func imageDifference(src, got image.Image) int {
+	b, gb := src.Bounds(), got.Bounds()
+
+	worst := 0
+
+	for y := range b.Dy() {
+		for x := range b.Dx() {
+			r1, g1, b1, a1 := src.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			r2, g2, b2, a2 := got.At(gb.Min.X+x, gb.Min.Y+y).RGBA()
+
+			for _, d := range [4]int{
+				int(r1) - int(r2), int(g1) - int(g2), int(b1) - int(b2), int(a1) - int(a2),
+			} {
+				worst = max(worst, max(d, -d))
+			}
+		}
+	}
+
+	return worst
+}
+
 func alphaError(src, got image.Image) int {
 	b, gb := src.Bounds(), got.Bounds()
 
@@ -535,7 +556,7 @@ func TestEncodeCorpus(t *testing.T) {
 
 	var worst []result
 
-	total, size := 0, 0
+	total, size, lossless := 0, 0, 0
 
 	for _, sub := range corpusSubdirs {
 		files, err := filepath.Glob(filepath.Join(root, "reference", sub, "*.png"))
@@ -590,6 +611,27 @@ func TestEncodeCorpus(t *testing.T) {
 				t.Errorf("%s: alpha is %d off, it is coded losslessly", name, d)
 			}
 
+			var raw bytes.Buffer
+
+			if err := Encode(&raw, src, EncodeOptions{Lossless: true, Effort: 1}); err != nil {
+				t.Errorf("%s: lossless encode gave %v", name, err)
+
+				continue
+			}
+
+			exact, err := Decode(bytes.NewReader(raw.Bytes()), Options{Level: 10})
+			if err != nil {
+				t.Errorf("%s: lossless decode gave %v", name, err)
+
+				continue
+			}
+
+			if d := imageDifference(src, exact); d != 0 {
+				t.Errorf("%s: lossless is %d off", name, d)
+			}
+
+			lossless += raw.Len()
+
 			if rmse > encodeCorpusTolerance {
 				t.Errorf("%s: root mean square error %g", name, rmse)
 			}
@@ -620,7 +662,8 @@ func TestEncodeCorpus(t *testing.T) {
 		t.Logf("%-42s rmse %.4f peak %.4f", r.name, r.rmse, r.peak)
 	}
 
-	t.Logf("%d images encoded to %d bytes, djxl read them all: %v", total, size, djxl != "")
+	t.Logf("%d images encoded to %d bytes, %d bytes lossless, djxl read them all: %v",
+		total, size, lossless, djxl != "")
 }
 
 // TestExifCorpus reads the metadata of every corpus file that carries any,

@@ -1,48 +1,79 @@
 package jxl
 
-func (f *frame) encodeLFGlobal(w *bitWriter) {
+func (f *frame) encodeLFGlobal(w *bitWriter, hdr *groupHeader, tree *maTree,
+	values []valueCounts,
+) *symbolWriter {
 	if f.hdr.flags&(flagPatches|flagSplines|flagNoise) != 0 {
 		w.setErr(ErrUnsupported)
 
-		return
+		return nil
 	}
 
 	f.lfQuant.write(w)
 
-	if f.hdr.encoding != encVarDCT {
-		w.setErr(ErrUnsupported)
+	if f.hdr.encoding == encVarDCT {
+		v := f.vardct
 
-		return
+		v.quant.write(w)
+		v.bctx.write(w)
+		v.cmap.write(w)
+
+		if w.err() != nil {
+			return nil
+		}
 	}
 
-	v := f.vardct
+	w.bit(tree != nil)
 
-	v.quant.write(w)
-	v.bctx.write(w)
-	v.cmap.write(w)
+	var codes *symbolWriter
 
-	if w.err() != nil {
-		return
+	if tree != nil {
+		codes = tree.write(w, values)
+
+		if w.err() != nil {
+			return nil
+		}
 	}
-
-	w.bit(false)
 
 	if len(f.modular.channels) == 0 {
-		return
+		return codes
 	}
 
-	hdr := groupHeader{wp: defaultWeightedHeader()}
 	hdr.write(w)
 
 	if w.err() != nil {
-		return
+		return nil
 	}
 
 	if f.beginC == 0 {
-		return
+		return codes
 	}
 
-	f.modular.encodeCoded(w, &hdr, channelTree(f.beginC, predGradient), 0, f.beginC)
+	if tree == nil {
+		f.modular.encodeCoded(w, hdr, f.modularTree(0, f.beginC), 0, f.beginC)
+
+		return nil
+	}
+
+	var sw symbolWriter
+
+	f.modular.encodeSymbols(w, hdr, tree, 0, f.beginC, codes, &sw)
+
+	return codes
+}
+
+func (f *frame) modularTree(begin, channels int) *maTree {
+	if f.learned != nil {
+		return f.learned
+	}
+
+	if f.predictors == nil {
+		return channelTree(channels, f.predictor)
+	}
+
+	c := f.modular.channels[begin]
+
+	return fixedTree(f.predictors[begin:begin+channels], c.w*c.h, f.modular.bitDepth)
 }
 
 func (f *frame) setAlpha(a *alphaSource, w, h int) {
@@ -56,7 +87,7 @@ func (f *frame) setAlpha(a *alphaSource, w, h int) {
 	f.beginC = f.modular.firstGroupedChannel(f.hdr.groupDim())
 }
 
-func (f *frame) encodeModularGroup(w *bitWriter, rc rect, minShift, maxShift, streamID int) {
+func (f *frame) modularGroupImage(rc rect, minShift, maxShift int) modImage {
 	var sub modImage
 
 	for c := f.beginC; c < len(f.modular.channels); c++ {
@@ -85,13 +116,19 @@ func (f *frame) encodeModularGroup(w *bitWriter, rc rect, minShift, maxShift, st
 		sub.channels = append(sub.channels, dst)
 	}
 
+	return sub
+}
+
+func (f *frame) encodeModularGroup(w *bitWriter, rc rect, minShift, maxShift, streamID int) {
+	sub := f.modularGroupImage(rc, minShift, maxShift)
+
 	if len(sub.channels) == 0 {
 		return
 	}
 
 	hdr := groupHeader{wp: defaultWeightedHeader()}
 
-	sub.encodeStream(w, &hdr, channelTree(len(sub.channels), predGradient), streamID)
+	sub.encodeStream(w, &hdr, f.modularTree(f.beginC, len(sub.channels)), streamID)
 }
 
 func (f *frame) encode(w *bitWriter, m *imageMetadata, imgW, imgH uint32, body [][]byte) {

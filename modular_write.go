@@ -1,6 +1,9 @@
 package jxl
 
-import "math/bits"
+import (
+	"math"
+	"math/bits"
+)
 
 func (h *weightedHeader) write(w *bitWriter) {
 	if *h == defaultWeightedHeader() {
@@ -20,16 +23,54 @@ func (h *weightedHeader) write(w *bitWriter) {
 	}
 }
 
-func (g *groupHeader) write(w *bitWriter) {
-	if len(g.transforms) != 0 {
+func (t *modTransform) write(w *bitWriter) {
+	if t.id != xformRCT {
 		w.setErr(ErrUnsupported)
 
 		return
 	}
 
+	w.bits(2, uint64(t.id))
+	w.u32(t.beginC, dBits(3), dBitsOff(6, 8), dBitsOff(10, 72), dBitsOff(13, 1096))
+	w.u32(t.rctType, dVal(6), dBits(2), dBitsOff(4, 2), dBitsOff(6, 10))
+}
+
+func (g *groupHeader) write(w *bitWriter) {
 	w.bit(g.useGlobalTree)
 	g.wp.write(w)
-	w.u32(0, dVal(0), dVal(1), dBitsOff(4, 2), dBitsOff(8, 18))
+	w.u32(uint32(len(g.transforms)), dVal(0), dVal(1), dBitsOff(4, 2), dBitsOff(8, 18))
+
+	for i := range g.transforms {
+		g.transforms[i].write(w)
+	}
+}
+
+const rctYCoCg = 6
+
+func (m *modImage) forwardRCT(begin int) bool {
+	if begin+3 > len(m.channels) {
+		return false
+	}
+
+	c0, c1, c2 := m.channels[begin], m.channels[begin+1], m.channels[begin+2]
+
+	if !c0.equivalent(c1) || !c0.equivalent(c2) {
+		return false
+	}
+
+	for y := range c0.h {
+		r, g, b := c0.row(y), c1.row(y), c2.row(y)
+
+		for x := range c0.w {
+			co := r[x] - b[x]
+			tmp := b[x] + co>>1
+			cg := g[x] - tmp
+
+			r[x], g[x], b[x] = tmp+cg>>1, co, cg
+		}
+	}
+
+	return true
 }
 
 func splitMultiplier(m uint32) (mulLog, mulBits uint32, ok bool) {
@@ -104,17 +145,180 @@ func activityLeaf(p uint8) *treeSpec {
 	return spec
 }
 
-func channelTree(channels int, p uint8) *maTree {
-	spec := activityLeaf(p)
+const (
+	gradientValueProperty = 9
+	fixedTreeMinPixels    = 14
+)
 
-	for c := channels - 2; c >= 0; c-- {
-		spec = &treeSpec{property: 0, val: int32(c), left: spec, right: activityLeaf(p)}
+var fixedTreeCutoffs = [...]int32{
+	-500, -392, -255, -191, -127, -95, -63, -47, -31, -23, -15, -11, -7, -4, -3, -1, 0,
+	1, 3, 5, 7, 11, 15, 23, 31, 47, 63, 95, 127, 191, 255, 392, 500,
+}
+
+func fixedTreeNode(property, mul int32, minGap, begin, end int, p uint8) *treeSpec {
+	if begin+minGap >= end {
+		return predictorLeaf(p)
+	}
+
+	split := (begin + end) / 2
+
+	return &treeSpec{
+		property: property,
+		val:      fixedTreeCutoffs[split] * mul,
+		left:     fixedTreeNode(property, mul, minGap, split+1, end, p),
+		right:    fixedTreeNode(property, mul, minGap, begin, split, p),
+	}
+}
+
+// fixedTreeLeaf mirrors libjxl's static context tree: a balanced search over
+// the residual predictor's own error, shallower on small images.
+func fixedTreeLeaf(p uint8, pixels int, depth uint32) *treeSpec {
+	minGap := 0
+
+	if log := ceilLog2(uint32(max(pixels, 1))); log < fixedTreeMinPixels {
+		minGap = 8 * (fixedTreeMinPixels - int(log))
+	}
+
+	mul := int32(1)
+
+	if depth > 11 {
+		mul = 1 << min(4, depth-11)
+	}
+
+	property := int32(gradientValueProperty)
+	if p == predWeighted {
+		property = wpProperty
+	}
+
+	return fixedTreeNode(property, mul, minGap, 0, len(fixedTreeCutoffs), p)
+}
+
+func fixedTree(preds []uint8, pixels int, depth uint32) *maTree {
+	spec := fixedTreeLeaf(preds[len(preds)-1], pixels, depth)
+
+	for c := len(preds) - 2; c >= 0; c-- {
+		spec = &treeSpec{
+			property: 0, val: int32(c),
+			left:  spec,
+			right: fixedTreeLeaf(preds[c], pixels, depth),
+		}
 	}
 
 	t := &maTree{nodes: serializeTree(spec)}
 	t.finish()
 
 	return t
+}
+
+func predictorTree(preds []uint8) *maTree {
+	spec := activityLeaf(preds[len(preds)-1])
+
+	for c := len(preds) - 2; c >= 0; c-- {
+		spec = &treeSpec{property: 0, val: int32(c), left: spec, right: activityLeaf(preds[c])}
+	}
+
+	t := &maTree{nodes: serializeTree(spec)}
+	t.finish()
+
+	return t
+}
+
+func channelTree(channels int, p uint8) *maTree {
+	preds := make([]uint8, channels)
+
+	for i := range preds {
+		preds[i] = p
+	}
+
+	return predictorTree(preds)
+}
+
+var (
+	fastPredictors = [...]uint8{predGradient, predWeighted, predWest, predNorth, predSelect}
+	allPredictors  = [...]uint8{
+		predGradient, predWeighted, predWest, predNorth, predSelect, predAvgWestNorth,
+		predNorthEast, predNorthWest, predWestWest, predAvgWestNorthWest,
+		predAvgNorthNorthWest, predAvgNorthNorthEast, predAvgAll, predZero,
+	}
+)
+
+func predictorCandidates(effort int) []uint8 {
+	switch {
+	case effort < predictorSearchEffort:
+		return fastPredictors[:1]
+	case effort < MaxEffort:
+		return fastPredictors[:]
+	default:
+		return allPredictors[:]
+	}
+}
+
+// residualCost estimates the bits a channel takes, bucketing residuals the way
+// the entropy coder does and adding the bits below each bucket.
+func residualCost(counts *[32]uint32, total uint32) float64 {
+	if total == 0 {
+		return 0
+	}
+
+	bits := 0.0
+
+	for b, n := range counts {
+		if n == 0 {
+			continue
+		}
+
+		bits += float64(n) * (log2Int(uint64(total)) - log2Int(uint64(n)))
+
+		if b > 1 {
+			bits += float64(n) * float64(b-1)
+		}
+	}
+
+	return bits
+}
+
+func (m *modImage) choosePredictors(wph *weightedHeader, streamID int, effort int) []uint8 {
+	out := make([]uint8, len(m.channels))
+	candidates := predictorCandidates(effort)
+
+	var scratch modScratch
+
+	for i, c := range m.channels {
+		out[i] = candidates[0]
+
+		if c.w == 0 || c.h == 0 {
+			continue
+		}
+
+		best := math.Inf(1)
+
+		for _, p := range candidates {
+			tree := &maTree{nodes: serializeTree(predictorLeaf(p))}
+			tree.finish()
+
+			var (
+				counts [32]uint32
+				total  uint32
+			)
+
+			ok := m.walkChannel(tree, wph, i, streamID, &scratch, func(_ []int32, _ uint32, residual int32) bool {
+				counts[bits.Len32(packSigned(residual))]++
+				total++
+
+				return true
+			})
+
+			if !ok {
+				continue
+			}
+
+			if cost := residualCost(&counts, total); cost < best {
+				best, out[i] = cost, p
+			}
+		}
+	}
+
+	return out
 }
 
 func (t *maTree) finish() {
@@ -211,20 +415,16 @@ func (t *maTree) write(w *bitWriter, leafValues []valueCounts) *symbolWriter {
 
 	sw.flush(w)
 
-	leaves := make([]uint8, len(leafValues))
+	leaves, clustered := clusterContexts(leafValues, 256)
 
-	for i := range leaves {
-		leaves[i] = uint8(i)
-	}
-
-	ch, counts := buildHistograms(leaves, leafValues)
+	ch, counts := buildHistograms(leaves, clustered)
 	t.histograms = *ch
 
 	return t.histograms.write(w, counts)
 }
 
 func (m *modImage) walkChannel(tree *maTree, wph *weightedHeader, chan_, streamID int,
-	scratch *modScratch, fn func(id uint32, residual int32) bool,
+	scratch *modScratch, fn func(props []int32, id uint32, residual int32) bool,
 ) bool {
 	c := m.channels[chan_]
 
@@ -317,7 +517,7 @@ func (m *modImage) walkChannel(tree *maTree, wph *weightedHeader, chan_, streamI
 				return false
 			}
 
-			if !fn(leaf.id, int32(q)) {
+			if !fn(props, leaf.id, int32(q)) {
 				return false
 			}
 
@@ -328,6 +528,48 @@ func (m *modImage) walkChannel(tree *maTree, wph *weightedHeader, chan_, streamI
 	}
 
 	return true
+}
+
+func (m *modImage) walkStream(tree *maTree, wph *weightedHeader, streamID, upto int,
+	fn func(props []int32, id uint32, residual int32) bool,
+) bool {
+	var scratch modScratch
+
+	for i, c := range m.channels[:upto] {
+		if c.w == 0 || c.h == 0 {
+			continue
+		}
+
+		if !m.walkChannel(tree, wph, i, streamID, &scratch, fn) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (m *modImage) countResiduals(hdr *groupHeader, tree *maTree, streamID, upto int,
+	values []valueCounts,
+) bool {
+	return m.walkStream(tree, &hdr.wp, streamID, upto, func(_ []int32, id uint32, residual int32) bool {
+		values[id].add(packSigned(residual))
+
+		return true
+	})
+}
+
+func (m *modImage) encodeSymbols(w *bitWriter, hdr *groupHeader, tree *maTree, streamID, upto int,
+	codes, sw *symbolWriter,
+) {
+	sw.reset(codes)
+
+	m.walkStream(tree, &hdr.wp, streamID, upto, func(_ []int32, id uint32, residual int32) bool {
+		sw.writeSigned(&tree.histograms, w, int(id), residual)
+
+		return w.err() == nil
+	})
+
+	sw.flush(w)
 }
 
 func (m *modImage) encodeStream(w *bitWriter, hdr *groupHeader, tree *maTree, streamID int) {
@@ -366,7 +608,7 @@ func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, str
 			continue
 		}
 
-		ok := m.walkChannel(tree, &hdr.wp, i, streamID, &collect, func(id uint32, residual int32) bool {
+		ok := m.walkChannel(tree, &hdr.wp, i, streamID, &collect, func(_ []int32, id uint32, residual int32) bool {
 			values[id].add(packSigned(residual))
 
 			return true
@@ -392,7 +634,7 @@ func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, str
 			continue
 		}
 
-		m.walkChannel(tree, &hdr.wp, i, streamID, &emit, func(id uint32, residual int32) bool {
+		m.walkChannel(tree, &hdr.wp, i, streamID, &emit, func(_ []int32, id uint32, residual int32) bool {
 			sw.writeSigned(&tree.histograms, w, int(id), residual)
 
 			return w.err() == nil

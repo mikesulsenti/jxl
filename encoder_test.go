@@ -736,6 +736,162 @@ func TestEncodeEffortQuality(t *testing.T) {
 	}
 }
 
+func losslessCorpus() []struct {
+	name string
+	img  image.Image
+} {
+	deep := image.NewNRGBA64(image.Rect(0, 0, 200, 120))
+	base := texturedImage(200, 120)
+
+	for y := range 120 {
+		for x := range 200 {
+			c := base.NRGBAAt(x, y)
+
+			deep.SetNRGBA64(x, y, color.NRGBA64{
+				R: uint16(c.R) * 0x101, G: uint16(c.G)*0x101 + 7, B: uint16(c.B) * 0x101,
+				A: uint16(x*257 + y),
+			})
+		}
+	}
+
+	gray := image.NewGray(image.Rect(0, 0, 128, 96))
+
+	for y := range 96 {
+		for x := range 128 {
+			gray.SetGray(x, y, color.Gray{Y: uint8(x*2 ^ y)})
+		}
+	}
+
+	return []struct {
+		name string
+		img  image.Image
+	}{
+		{"rgb", texturedImage(300, 260)},
+		{"alpha", alphaImage(300, 260)},
+		{"deep", deep},
+		{"gray", gray},
+		{"tiny", testImage(8, 8)},
+		{"wide", texturedImage(600, 129)},
+	}
+}
+
+func sameImage(t *testing.T, name string, want, got image.Image) {
+	t.Helper()
+
+	b := want.Bounds()
+
+	for y := range b.Dy() {
+		for x := range b.Dx() {
+			r1, g1, b1, a1 := want.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			r2, g2, b2, a2 := got.At(x, y).RGBA()
+
+			if r1 != r2 || g1 != g2 || b1 != b2 || a1 != a2 {
+				t.Fatalf("%s: pixel %d,%d is %v %v %v %v, want %v %v %v %v",
+					name, x, y, r2, g2, b2, a2, r1, g1, b1, a1)
+			}
+		}
+	}
+}
+
+func TestEncodeLossless(t *testing.T) {
+	for _, tc := range losslessCorpus() {
+		for _, e := range []int{1, 3, 5, MaxEffort} {
+			var buf bytes.Buffer
+
+			if err := Encode(&buf, tc.img, EncodeOptions{Lossless: true, Effort: e}); err != nil {
+				t.Fatalf("%s at effort %d: %v", tc.name, e, err)
+			}
+
+			got, err := Decode(bytes.NewReader(buf.Bytes()))
+			if err != nil {
+				t.Fatalf("%s at effort %d: decode gave %v", tc.name, e, err)
+			}
+
+			if got.Bounds() != image.Rect(0, 0, tc.img.Bounds().Dx(), tc.img.Bounds().Dy()) {
+				t.Fatalf("%s at effort %d: decoded %v", tc.name, e, got.Bounds())
+			}
+
+			sameImage(t, tc.name, tc.img, got)
+
+			t.Logf("%-6s effort %d: %d bytes", tc.name, e, buf.Len())
+		}
+	}
+}
+
+func TestEncodeLosslessEffort(t *testing.T) {
+	src := texturedImage(512, 384)
+
+	sizes := make([]int, MaxEffort+1)
+
+	for e := 1; e <= MaxEffort; e++ {
+		var buf bytes.Buffer
+
+		if err := Encode(&buf, src, EncodeOptions{Lossless: true, Effort: e}); err != nil {
+			t.Fatalf("effort %d: %v", e, err)
+		}
+
+		sizes[e] = buf.Len()
+
+		t.Logf("effort %d: %d bytes", e, sizes[e])
+	}
+
+	for e := 2; e <= MaxEffort; e++ {
+		if sizes[e] > sizes[e-1] {
+			t.Fatalf("effort %d gave %d bytes, effort %d gave %d",
+				e, sizes[e], e-1, sizes[e-1])
+		}
+	}
+
+	if sizes[MaxEffort] >= sizes[1] {
+		t.Fatalf("effort %d gave %d bytes, no smaller than %d at effort 1",
+			MaxEffort, sizes[MaxEffort], sizes[1])
+	}
+}
+
+func TestEncodeLosslessAgainstLibjxl(t *testing.T) {
+	djxl, err := exec.LookPath("djxl")
+	if err != nil {
+		t.Skip("djxl is not on the path")
+	}
+
+	dir := t.TempDir()
+
+	for _, tc := range losslessCorpus() {
+		var buf bytes.Buffer
+
+		if err := Encode(&buf, tc.img, EncodeOptions{Lossless: true}); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+
+		jxlPath := filepath.Join(dir, tc.name+".jxl")
+		dst := filepath.Join(dir, tc.name+".png")
+
+		if err := os.WriteFile(jxlPath, buf.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if o, err := exec.Command(djxl, jxlPath, dst).CombinedOutput(); err != nil {
+			t.Fatalf("%s: djxl refused our file: %v\n%s", tc.name, err, o)
+		}
+
+		f, err := os.Open(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		theirs, err := png.Decode(f)
+		f.Close()
+
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+
+		sameImage(t, tc.name, tc.img, theirs)
+
+		t.Logf("%-6s %d bytes, exact through libjxl", tc.name, buf.Len())
+	}
+}
+
 func TestTransformCandidates(t *testing.T) {
 	var prev []hfTransform
 

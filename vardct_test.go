@@ -1020,7 +1020,7 @@ func TestVarDCTBodyRoundTrip(t *testing.T) {
 
 		hdr := groupHeader{wp: defaultWeightedHeader()}
 
-		f.encodeLFGlobal(&w)
+		f.encodeLFGlobal(&w, &groupHeader{wp: defaultWeightedHeader()}, nil, nil)
 		f.encodeVarDCTLF(&w, 0, &hdr, trivialTree())
 		f.encodeHFMetadata(&w, 0, &hdr, trivialTree())
 		codes := f.encodeHFGlobal(&w, hist, counts)

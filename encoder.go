@@ -16,7 +16,7 @@ func encodeFilter() restorationFilter {
 }
 
 func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int) (*frame, error) {
-	f := &frame{}
+	f := &frame{predictor: predGradient}
 
 	f.hdr.width, f.hdr.height = uint32(w), uint32(h)
 	f.hdr.encoding = encVarDCT
@@ -190,6 +190,8 @@ const (
 	transformRateMargin   = 0.7
 	adaptiveQuantStrength = 0.2
 	adaptiveQuantEffort   = 2
+	predictorSearchEffort = 3
+	treeLearnEffort       = 5
 )
 
 var transformLadder = [...]struct {
@@ -475,7 +477,7 @@ func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 	lfTree := channelTree(3, predGradient)
 	metaTree := channelTree(4, predGradient)
 
-	f.encodeLFGlobal(sections[0])
+	f.encodeLFGlobal(sections[0], &groupHeader{wp: defaultWeightedHeader()}, nil, nil)
 
 	for g := range numLF {
 		f.encodeVarDCTLF(sections[1+g], g, &hdr, lfTree)
@@ -628,6 +630,319 @@ func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) 
 	return out.bytes(), nil
 }
 
+type sampleSource struct {
+	rows  func(y int, dst [][]int32)
+	extra int
+	bits  uint32
+}
+
+func samples8(at func(x, y int) (uint8, uint8, uint8, uint8), extra int) func(int, [][]int32) {
+	return func(y int, dst [][]int32) {
+		for x := range dst[0] {
+			r, g, b, a := at(x, y)
+
+			dst[0][x], dst[1][x], dst[2][x] = int32(r), int32(g), int32(b)
+
+			if extra != 0 {
+				dst[3][x] = int32(a)
+			}
+		}
+	}
+}
+
+func samples16(at func(x, y int) (uint16, uint16, uint16, uint16), extra int) func(int, [][]int32) {
+	return func(y int, dst [][]int32) {
+		for x := range dst[0] {
+			r, g, b, a := at(x, y)
+
+			dst[0][x], dst[1][x], dst[2][x] = int32(r), int32(g), int32(b)
+
+			if extra != 0 {
+				dst[3][x] = int32(a)
+			}
+		}
+	}
+}
+
+func imageSamples(m image.Image) sampleSource {
+	b := m.Bounds()
+	bits := imageDepth(m)
+
+	extra := 0
+	if imageAlpha(m) != nil {
+		extra = 1
+	}
+
+	switch src := m.(type) {
+	case *image.NRGBA:
+		return sampleSource{samples8(func(x, y int) (uint8, uint8, uint8, uint8) {
+			c := src.NRGBAAt(b.Min.X+x, b.Min.Y+y)
+
+			return c.R, c.G, c.B, c.A
+		}, extra), extra, bits}
+	case *image.RGBA:
+		return sampleSource{samples8(func(x, y int) (uint8, uint8, uint8, uint8) {
+			c := color.NRGBAModel.Convert(src.RGBAAt(b.Min.X+x, b.Min.Y+y)).(color.NRGBA)
+
+			return c.R, c.G, c.B, c.A
+		}, extra), extra, bits}
+	case *image.Gray:
+		return sampleSource{samples8(func(x, y int) (uint8, uint8, uint8, uint8) {
+			v := src.GrayAt(b.Min.X+x, b.Min.Y+y).Y
+
+			return v, v, v, 0xff
+		}, extra), extra, bits}
+	case *image.NRGBA64:
+		return sampleSource{samples16(func(x, y int) (uint16, uint16, uint16, uint16) {
+			c := src.NRGBA64At(b.Min.X+x, b.Min.Y+y)
+
+			return c.R, c.G, c.B, c.A
+		}, extra), extra, bits}
+	case *image.RGBA64:
+		return sampleSource{samples16(func(x, y int) (uint16, uint16, uint16, uint16) {
+			c := color.NRGBA64Model.Convert(src.RGBA64At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA64)
+
+			return c.R, c.G, c.B, c.A
+		}, extra), extra, bits}
+	case *image.Gray16:
+		return sampleSource{samples16(func(x, y int) (uint16, uint16, uint16, uint16) {
+			v := src.Gray16At(b.Min.X+x, b.Min.Y+y).Y
+
+			return v, v, v, 0xffff
+		}, extra), extra, bits}
+	default:
+		return sampleSource{samples16(func(x, y int) (uint16, uint16, uint16, uint16) {
+			c := color.NRGBA64Model.Convert(m.At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA64)
+
+			return c.R, c.G, c.B, c.A
+		}, extra), extra, 16}
+	}
+}
+
+func newModularFrame(m *imageMetadata, w, h int) *frame {
+	f := &frame{predictor: predGradient}
+
+	f.hdr.width, f.hdr.height = uint32(w), uint32(h)
+	f.hdr.encoding = encModular
+	f.hdr.upsampling = 1
+	f.hdr.groupSizeShift = 1
+	f.hdr.pass.numPasses = 1
+	f.hdr.isLast = true
+	f.hdr.filter = encodeFilter()
+	f.hdr.ecUpsampling = make([]uint32, len(m.extraChannels))
+	f.hdr.ecBlending = make([]blendingInfo, len(m.extraChannels))
+
+	for i := range f.hdr.ecUpsampling {
+		f.hdr.ecUpsampling[i] = 1
+	}
+
+	f.lfQuant.factors = lfQuantDefault
+	f.modular.bitDepth = m.depth.bitsPerSample
+
+	return f
+}
+
+func (f *frame) setModularSamples(src *sampleSource, w, h int) {
+	n := 3 + src.extra
+
+	rows := make([][]int32, n)
+	f.modular.channels = make([]*modChannel, n)
+
+	for c := range n {
+		f.modular.channels[c] = newModChannel(w, h, 0, 0)
+	}
+
+	for y := range h {
+		for c := range n {
+			rows[c] = f.modular.channels[c].row(y)
+		}
+
+		src.rows(y, rows)
+	}
+
+	f.beginC = f.modular.firstGroupedChannel(f.hdr.groupDim())
+}
+
+func (f *frame) encodeModularSections() ([][]byte, error) {
+	numLF := f.hdr.numLFGroups()
+	numGroups := f.hdr.numGroups()
+
+	sections := make([]*bitWriter, 2+numLF+numGroups)
+
+	for i := range sections {
+		sections[i] = &bitWriter{}
+	}
+
+	hdr := groupHeader{
+		useGlobalTree: true,
+		wp:            defaultWeightedHeader(),
+		transforms:    []modTransform{{id: xformRCT, rctType: rctYCoCg}},
+	}
+
+	groupHdr := groupHeader{useGlobalTree: true, wp: defaultWeightedHeader()}
+
+	tree := f.modularTree(0, len(f.modular.channels))
+
+	dim := f.hdr.groupDim()
+	gx, _ := f.hdr.sizeGroups()
+	minShift, maxShift := f.hdr.pass.bracket(0)
+
+	groupID := func(g int) int { return 1 + numLF*3 + numQuantTables + g }
+	groupAt := func(g int) rect { return f.groupRect(g%gx, g/gx, dim) }
+
+	nw := min(numThreads(f.threads), max(numGroups, 1))
+	perWorker := make([][]valueCounts, nw)
+
+	leaves := (len(tree.nodes) + 1) / 2
+
+	for i := range perWorker {
+		perWorker[i] = make([]valueCounts, leaves)
+	}
+
+	if f.beginC > 0 && !f.modular.countResiduals(&hdr, tree, 0, f.beginC, perWorker[0]) {
+		return nil, ErrInvalid
+	}
+
+	err := overTasks(nw, numGroups, func(w, g int) error {
+		sub := f.modularGroupImage(groupAt(g), minShift, maxShift)
+
+		if len(sub.channels) == 0 {
+			return nil
+		}
+
+		if !sub.countResiduals(&groupHdr, tree, groupID(g), len(sub.channels), perWorker[w]) {
+			return ErrInvalid
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	values := perWorker[0]
+
+	for _, other := range perWorker[1:] {
+		for i := range other {
+			values[i].merge(&other[i])
+		}
+	}
+
+	codes := f.encodeLFGlobal(sections[0], &hdr, tree, values)
+
+	if err := sections[0].err(); err != nil {
+		return nil, err
+	}
+
+	writers := make([]symbolWriter, nw)
+
+	err = overTasks(nw, numGroups, func(w, g int) error {
+		sub := f.modularGroupImage(groupAt(g), minShift, maxShift)
+
+		if len(sub.channels) == 0 {
+			return nil
+		}
+
+		sec := sections[2+numLF+g]
+
+		groupHdr.write(sec)
+
+		if err := sec.err(); err != nil {
+			return err
+		}
+
+		sub.encodeSymbols(sec, &groupHdr, tree, groupID(g), len(sub.channels), codes, &writers[w])
+
+		return sec.err()
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, sec := range sections {
+		if err := sec.err(); err != nil {
+			return nil, err
+		}
+	}
+
+	if f.hdr.numTOCEntries() == 1 {
+		var w bitWriter
+
+		for _, sec := range sections {
+			w.append(sec)
+		}
+
+		return [][]byte{w.bytes()}, w.err()
+	}
+
+	out := make([][]byte, len(sections))
+
+	for i, sec := range sections {
+		out[i] = sec.bytes()
+	}
+
+	return out, nil
+}
+
+func encodeModularImage(src *sampleSource, w, h int, p encodeParams) ([]byte, error) {
+	if w <= 0 || h <= 0 {
+		return nil, ErrInvalid
+	}
+
+	var head fileHeader
+
+	head.size = sizeHeader{xsize: uint32(w), ysize: uint32(h)}
+	head.meta = defaultImageMetadata()
+	head.meta.xybEncoded = false
+	head.meta.depth = bitDepth{bitsPerSample: src.bits}
+	head.transform = defaultCustomTransformData()
+
+	if src.extra != 0 {
+		ec := defaultExtraChannelInfo()
+		ec.depth = head.meta.depth
+
+		head.meta.extraChannels = []extraChannelInfo{ec}
+	}
+
+	f := newModularFrame(&head.meta, w, h)
+	f.threads = p.threads
+
+	f.setModularSamples(src, w, h)
+
+	if !f.modular.forwardRCT(0) {
+		return nil, ErrInvalid
+	}
+
+	wp := defaultWeightedHeader()
+	effort := effortLevel(p.effort)
+
+	f.predictors = f.modular.choosePredictors(&wp, 0, effort)
+
+	if effort >= treeLearnEffort {
+		f.learned = f.modular.learnTree(&wp, f.predictors)
+
+		if f.learned == nil {
+			return nil, ErrInvalid
+		}
+	}
+
+	body, err := f.encodeModularSections()
+	if err != nil {
+		return nil, err
+	}
+
+	var out bitWriter
+
+	head.write(&out)
+	f.encode(&out, &head.meta, uint32(w), uint32(h), body)
+
+	if err := out.err(); err != nil {
+		return nil, err
+	}
+
+	return out.bytes(), nil
+}
+
 // EncodeOptions controls the encoder. The zero value is a reasonable default.
 type EncodeOptions struct {
 	// Quality runs from 1 to 100, where 100 is the least lossy. Zero means
@@ -637,6 +952,8 @@ type EncodeOptions struct {
 	// search for a smaller file at the same quality. Zero means DefaultEffort,
 	// higher values are clamped.
 	Effort int
+	// Lossless reproduces the source samples exactly, ignoring Quality.
+	Lossless bool
 	// Threads bounds the goroutines encoding one frame. Zero means GOMAXPROCS,
 	// one encodes serially.
 	Threads int
@@ -850,8 +1167,9 @@ func imageRows(m image.Image) rowSource {
 	}
 }
 
-// Encode writes m as a lossy JPEG XL codestream. Samples are treated as sRGB.
-// An alpha channel is kept losslessly, and dropped when every pixel is opaque.
+// Encode writes m as a JPEG XL codestream, lossy VarDCT by default and
+// Modular when EncodeOptions.Lossless is set. Samples are treated as sRGB. An
+// alpha channel is kept losslessly, and dropped when every pixel is opaque.
 func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 	o := encodeOptions(opts)
 
@@ -862,14 +1180,27 @@ func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 		return ErrInvalid
 	}
 
-	data, err := encodeVarDCTImage(imageRows(m), width, height, encodeParams{
+	p := encodeParams{
 		distance: qualityToDistance(o.Quality),
 		threads:  o.Threads,
 		strength: adaptiveQuantStrength,
 		effort:   o.Effort,
 		depth:    imageDepth(m),
 		alpha:    imageAlpha(m),
-	})
+	}
+
+	var (
+		data []byte
+		err  error
+	)
+
+	if o.Lossless {
+		src := imageSamples(m)
+		data, err = encodeModularImage(&src, width, height, p)
+	} else {
+		data, err = encodeVarDCTImage(imageRows(m), width, height, p)
+	}
+
 	if err != nil {
 		return err
 	}

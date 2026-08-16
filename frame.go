@@ -34,10 +34,13 @@ type frame struct {
 	splines splines
 	noise   noiseParams
 
-	tree    *maTree
-	gh      groupHeader
-	beginC  int
-	threads int
+	tree       *maTree
+	learned    *maTree
+	gh         groupHeader
+	beginC     int
+	predictor  uint8
+	predictors []uint8
+	threads    int
 }
 
 type rect struct {
