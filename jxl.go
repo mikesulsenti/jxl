@@ -1,7 +1,8 @@
 // Package jxl decodes and encodes JPEG XL images.
 //
 // Decoding covers both Modular and VarDCT codestreams. Encoding writes a
-// single lossy VarDCT frame from sRGB input.
+// single lossy VarDCT frame from sRGB input, keeping any alpha channel
+// losslessly.
 //
 // [DecodeExif] parses the Exif metadata of a file, while [RawExif] and
 // [RawXMP] return the payloads whole. All three report [ErrNoExif] or

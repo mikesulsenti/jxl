@@ -464,6 +464,23 @@ func TestCorpus(t *testing.T) {
 	}
 }
 
+func alphaError(src, got image.Image) int {
+	b, gb := src.Bounds(), got.Bounds()
+
+	worst := 0
+
+	for y := range b.Dy() {
+		for x := range b.Dx() {
+			_, _, _, a1 := src.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			_, _, _, a2 := got.At(gb.Min.X+x, gb.Min.Y+y).RGBA()
+
+			worst = max(worst, int(math.Abs(float64(a1)-float64(a2))))
+		}
+	}
+
+	return worst
+}
+
 func opaqueError(src, got image.Image) (float64, float64) {
 	b, gb := src.Bounds(), got.Bounds()
 
@@ -568,6 +585,10 @@ func TestEncodeCorpus(t *testing.T) {
 
 			rmse, peak := opaqueError(src, got)
 			worst = append(worst, result{name, rmse, peak})
+
+			if d := alphaError(src, got); d != 0 {
+				t.Errorf("%s: alpha is %d off, it is coded losslessly", name, d)
+			}
 
 			if rmse > encodeCorpusTolerance {
 				t.Errorf("%s: root mean square error %g", name, rmse)

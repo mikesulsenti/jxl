@@ -195,12 +195,18 @@ func TestEncodeAgainstLibjxl(t *testing.T) {
 
 	dir := t.TempDir()
 
-	for _, dims := range [][2]int{{64, 48}, {17, 9}, {120, 96}, {257, 200}, {300, 260}, {512, 512}, {2100, 300}} {
+	for _, dims := range [][3]int{
+		{64, 48, 0}, {17, 9, 0}, {120, 96, 0}, {257, 200, 0}, {300, 260, 0}, {512, 512, 0},
+		{2100, 300, 0}, {96, 72, 1}, {300, 260, 1},
+	} {
 		w, h := dims[0], dims[1]
 
 		var src image.Image = testImage(w, h)
 
-		if w > groupDim || h > groupDim {
+		switch {
+		case dims[2] == 1:
+			src = alphaImage(w, h)
+		case w > groupDim || h > groupDim:
 			src = texturedImage(w, h)
 		}
 
@@ -250,13 +256,14 @@ func TestEncodeAgainstLibjxl(t *testing.T) {
 
 		for y := b.Min.Y; y < b.Max.Y; y++ {
 			for x := b.Min.X; x < b.Max.X; x++ {
-				r1, g1, b1, _ := ours.At(x, y).RGBA()
-				r2, g2, b2, _ := theirs.At(x, y).RGBA()
+				r1, g1, b1, a1 := ours.At(x, y).RGBA()
+				r2, g2, b2, a2 := theirs.At(x, y).RGBA()
 
-				for _, d := range [3]float64{
+				for _, d := range [4]float64{
 					math.Abs(float64(r1) - float64(r2)),
 					math.Abs(float64(g1) - float64(g2)),
 					math.Abs(float64(b1) - float64(b2)),
+					math.Abs(float64(a1) - float64(a2)),
 				} {
 					worst = math.Max(worst, d/65535)
 				}
@@ -345,8 +352,12 @@ func TestLinearFrom16MatchesDirect(t *testing.T) {
 }
 
 func TestEncodeThreadsAreDeterministic(t *testing.T) {
-	for _, dims := range [][2]int{{300, 260}, {512, 512}, {600, 129}} {
-		src := texturedImage(dims[0], dims[1])
+	for _, dims := range [][3]int{{300, 260, 0}, {512, 512, 0}, {600, 129, 0}, {300, 260, 1}} {
+		var src image.Image = texturedImage(dims[0], dims[1])
+
+		if dims[2] == 1 {
+			src = alphaImage(dims[0], dims[1])
+		}
 
 		var serial bytes.Buffer
 
@@ -507,6 +518,158 @@ func TestEncodeEffort(t *testing.T) {
 			t.Fatalf("effort %d gave %d bytes, no smaller than %d at effort 1",
 				e, sizes[e], sizes[1])
 		}
+	}
+}
+
+func alphaImage(w, h int) *image.NRGBA {
+	m := texturedImage(w, h)
+
+	for y := range h {
+		for x := range w {
+			c := m.NRGBAAt(x, y)
+
+			switch {
+			case x < w/4:
+				c.A = 0
+			case x < w/2:
+				c.A = uint8(255 * y / max(h-1, 1))
+			case x < 3*w/4:
+				c.A = 128
+			}
+
+			m.SetNRGBA(x, y, c)
+		}
+	}
+
+	return m
+}
+
+func TestEncodeAlpha(t *testing.T) {
+	for _, dims := range [][2]int{{64, 48}, {300, 260}, {600, 129}} {
+		w, h := dims[0], dims[1]
+
+		src := alphaImage(w, h)
+
+		var buf bytes.Buffer
+
+		if err := Encode(&buf, src); err != nil {
+			t.Fatalf("%v: %v", dims, err)
+		}
+
+		got, err := Decode(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			t.Fatalf("%v: decode gave %v", dims, err)
+		}
+
+		worst := 0
+
+		for y := range h {
+			for x := range w {
+				_, _, _, a := got.At(x, y).RGBA()
+
+				d := int(a>>8) - int(src.NRGBAAt(x, y).A)
+				if d < 0 {
+					d = -d
+				}
+
+				worst = max(worst, d)
+			}
+		}
+
+		t.Logf("%v: %d bytes, worst alpha error %d", dims, buf.Len(), worst)
+
+		if worst != 0 {
+			t.Fatalf("%v: alpha is %d off, it is coded losslessly", dims, worst)
+		}
+	}
+}
+
+func TestEncodeAlpha16(t *testing.T) {
+	w, h := 200, 120
+
+	base := texturedImage(w, h)
+	src := image.NewNRGBA64(image.Rect(0, 0, w, h))
+
+	for y := range h {
+		for x := range w {
+			c := base.NRGBAAt(x, y)
+
+			src.SetNRGBA64(x, y, color.NRGBA64{
+				R: uint16(c.R) * 0x101,
+				G: uint16(c.G) * 0x101,
+				B: uint16(c.B) * 0x101,
+				A: uint16(x*257 + y),
+			})
+		}
+	}
+
+	var buf bytes.Buffer
+
+	if err := Encode(&buf, src); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Decode(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := got.(*image.NRGBA64); !ok {
+		t.Fatalf("a 16 bit source decoded as %T", got)
+	}
+
+	for y := range h {
+		for x := range w {
+			_, _, _, a := got.At(x, y).RGBA()
+
+			if want := uint32(src.NRGBA64At(x, y).A); a != want {
+				t.Fatalf("alpha at %d,%d is %d, want %d", x, y, a, want)
+			}
+		}
+	}
+
+	t.Logf("%dx%d 16 bit alpha in %d bytes", w, h, buf.Len())
+}
+
+func encodedChannels(t *testing.T, src image.Image) int {
+	t.Helper()
+
+	var buf bytes.Buffer
+
+	if err := Encode(&buf, src); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := newDecoder(bytes.NewReader(buf.Bytes()), Options{Level: DefaultLevel})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return len(d.hdr.meta.extraChannels)
+}
+
+func TestEncodeOpaqueDropsAlpha(t *testing.T) {
+	if n := encodedChannels(t, texturedImage(96, 64)); n != 0 {
+		t.Fatalf("an opaque image carries %d extra channels", n)
+	}
+
+	if n := encodedChannels(t, alphaImage(96, 64)); n != 1 {
+		t.Fatalf("a transparent image carries %d extra channels", n)
+	}
+
+	opaque := alphaImage(96, 64)
+
+	for y := range 64 {
+		for x := range 96 {
+			c := opaque.NRGBAAt(x, y)
+			c.A = 255
+
+			opaque.SetNRGBA(x, y, c)
+		}
+	}
+
+	if n := encodedChannels(t, opaque); n != 0 {
+		t.Fatalf("an image with a full alpha channel carries %d extra channels", n)
 	}
 }
 

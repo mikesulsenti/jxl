@@ -28,6 +28,7 @@ func newEncodeFrame(m *imageMetadata, t *customTransformData, w, h int) (*frame,
 	f.hdr.flags = flagSkipAdaptiveLFSmoothing
 	f.hdr.filter = encodeFilter()
 	f.hdr.ecUpsampling = make([]uint32, len(m.extraChannels))
+	f.hdr.ecBlending = make([]blendingInfo, len(m.extraChannels))
 
 	for i := range f.hdr.ecUpsampling {
 		f.hdr.ecUpsampling[i] = 1
@@ -493,13 +494,27 @@ func (f *frame) encodeSections(scratch []dctScratch) ([][]byte, error) {
 
 	writers := make([]symbolWriter, nw)
 
+	dim := f.hdr.groupDim()
+	gx, _ := f.hdr.sizeGroups()
+	minShift, maxShift := f.hdr.pass.bracket(0)
+
 	err = overTasks(nw, numGroups, func(w, g int) error {
 		if !f.transformGroup(&scratch[w], g) {
 			return ErrUnsupported
 		}
 
-		return f.encodeVarDCTGroup(sections[2+numLF+g], g, &scratch[w], hist,
-			codes, &writers[w], 0)
+		sec := sections[2+numLF+g]
+
+		if err := f.encodeVarDCTGroup(sec, g, &scratch[w], hist, codes, &writers[w], 0); err != nil {
+			return err
+		}
+
+		if len(f.modular.channels) != 0 {
+			f.encodeModularGroup(sec, f.groupRect(g%gx, g/gx, dim), minShift, maxShift,
+				1+numLF*3+numQuantTables+g)
+		}
+
+		return sec.err()
 	})
 	if err != nil {
 		return nil, err
@@ -535,6 +550,8 @@ type encodeParams struct {
 	threads  int
 	strength float32
 	effort   int
+	depth    uint32
+	alpha    *alphaSource
 }
 
 func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) {
@@ -548,9 +565,24 @@ func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) 
 	head.meta = defaultImageMetadata()
 	head.transform = defaultCustomTransformData()
 
+	if p.depth != 0 {
+		head.meta.depth = bitDepth{bitsPerSample: p.depth}
+	}
+
+	if p.alpha != nil {
+		ec := defaultExtraChannelInfo()
+		ec.depth = bitDepth{bitsPerSample: p.alpha.bits}
+
+		head.meta.extraChannels = []extraChannelInfo{ec}
+	}
+
 	f, err := newEncodeFrame(&head.meta, &head.transform, w, h)
 	if err != nil {
 		return nil, err
+	}
+
+	if p.alpha != nil {
+		f.setAlpha(p.alpha, w, h)
 	}
 
 	params := newXYBParams(&head.transform.opsin, head.meta.tone.intensityTarget)
@@ -683,6 +715,92 @@ func linearRows(at func(x, y int) (uint32, uint32, uint32)) rowSource {
 	}
 }
 
+type alphaSource struct {
+	rows func(y int, dst []int32)
+	bits uint32
+}
+
+func imageDepth(m image.Image) uint32 {
+	switch m.(type) {
+	case *image.NRGBA64, *image.RGBA64, *image.Gray16:
+		return 16
+	default:
+		return 8
+	}
+}
+
+func alphaRows(m image.Image) (func(y int, dst []int32), uint32) {
+	b := m.Bounds()
+
+	switch src := m.(type) {
+	case *image.NRGBA:
+		return func(y int, dst []int32) {
+			for x := range dst {
+				dst[x] = int32(src.NRGBAAt(b.Min.X+x, b.Min.Y+y).A)
+			}
+		}, 8
+	case *image.RGBA:
+		return func(y int, dst []int32) {
+			for x := range dst {
+				dst[x] = int32(src.RGBAAt(b.Min.X+x, b.Min.Y+y).A)
+			}
+		}, 8
+	case *image.NRGBA64:
+		return func(y int, dst []int32) {
+			for x := range dst {
+				dst[x] = int32(src.NRGBA64At(b.Min.X+x, b.Min.Y+y).A)
+			}
+		}, 16
+	case *image.RGBA64:
+		return func(y int, dst []int32) {
+			for x := range dst {
+				dst[x] = int32(src.RGBA64At(b.Min.X+x, b.Min.Y+y).A)
+			}
+		}, 16
+	case *image.Gray, *image.Gray16, *image.YCbCr, *image.CMYK:
+		return nil, 0
+	default:
+		return func(y int, dst []int32) {
+			for x := range dst {
+				_, _, _, a := m.At(b.Min.X+x, b.Min.Y+y).RGBA()
+
+				dst[x] = int32(a)
+			}
+		}, 16
+	}
+}
+
+func imageAlpha(m image.Image) *alphaSource {
+	rows, bits := alphaRows(m)
+	if rows == nil {
+		return nil
+	}
+
+	if o, ok := m.(interface{ Opaque() bool }); ok {
+		if o.Opaque() {
+			return nil
+		}
+
+		return &alphaSource{rows, bits}
+	}
+
+	b := m.Bounds()
+	row := make([]int32, b.Dx())
+	opaque := int32(1)<<bits - 1
+
+	for y := range b.Dy() {
+		rows(y, row)
+
+		for _, v := range row {
+			if v != opaque {
+				return &alphaSource{rows, bits}
+			}
+		}
+	}
+
+	return nil
+}
+
 func imageRows(m image.Image) rowSource {
 	b := m.Bounds()
 
@@ -732,8 +850,8 @@ func imageRows(m image.Image) rowSource {
 	}
 }
 
-// Encode writes m as a lossy JPEG XL codestream. Samples are treated as sRGB,
-// and any alpha channel is dropped.
+// Encode writes m as a lossy JPEG XL codestream. Samples are treated as sRGB.
+// An alpha channel is kept losslessly, and dropped when every pixel is opaque.
 func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 	o := encodeOptions(opts)
 
@@ -749,6 +867,8 @@ func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 		threads:  o.Threads,
 		strength: adaptiveQuantStrength,
 		effort:   o.Effort,
+		depth:    imageDepth(m),
+		alpha:    imageAlpha(m),
 	})
 	if err != nil {
 		return err

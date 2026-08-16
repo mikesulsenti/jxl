@@ -337,13 +337,13 @@ func (m *modImage) encodeStream(w *bitWriter, hdr *groupHeader, tree *maTree, st
 		return
 	}
 
-	m.encodeCoded(w, hdr, tree, streamID)
+	m.encodeCoded(w, hdr, tree, streamID, len(m.channels))
 }
 
-func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, streamID int) {
+func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, streamID, upto int) {
 	empty := true
 
-	for _, c := range m.channels {
+	for _, c := range m.channels[:upto] {
 		if c.w != 0 && c.h != 0 {
 			empty = false
 
@@ -361,7 +361,7 @@ func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, str
 
 	var collect modScratch
 
-	for i, c := range m.channels {
+	for i, c := range m.channels[:upto] {
 		if c.w == 0 || c.h == 0 {
 			continue
 		}
@@ -387,7 +387,7 @@ func (m *modImage) encodeCoded(w *bitWriter, hdr *groupHeader, tree *maTree, str
 
 	var emit modScratch
 
-	for i, c := range m.channels {
+	for i, c := range m.channels[:upto] {
 		if c.w == 0 || c.h == 0 {
 			continue
 		}
