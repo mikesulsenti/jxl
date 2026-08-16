@@ -274,13 +274,14 @@ type varDCT struct {
 	cw, ch int
 	hs, vs [3]int
 
-	lf        [3][]float32
-	quantLF   []uint8
-	ytox      []int8
-	ytob      []int8
-	rawQuant  []int32
-	transform []uint8
-	epf       []uint8
+	lf         [3][]float32
+	quantLF    []uint8
+	ytox       []int8
+	ytob       []int8
+	rawQuant   []int32
+	quantField []float32
+	transform  []uint8
+	epf        []uint8
 
 	pixels [3][]float32
 	biases [4]float32

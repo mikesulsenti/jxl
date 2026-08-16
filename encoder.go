@@ -188,7 +188,7 @@ func (f *frame) blockCost(s *dctScratch, t hfTransform, bx, by int, lf *[3][]flo
 
 const (
 	transformRateMargin   = 0.7
-	adaptiveQuantStrength = 0.25
+	adaptiveQuantStrength = 0.2
 	adaptiveQuantEffort   = 2
 )
 
@@ -609,7 +609,7 @@ func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) 
 	}
 
 	f.chooseTransforms(scratch, transformCandidates(effort))
-	f.adjustQuantField()
+	f.adjustQuantField(p.distance)
 
 	body, err := f.encodeSections(scratch)
 	if err != nil {

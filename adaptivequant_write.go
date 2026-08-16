@@ -1,9 +1,6 @@
 package jxl
 
-import (
-	"math"
-	"slices"
-)
+import "math"
 
 const (
 	aqSGmul     = 226.77216153508914
@@ -26,6 +23,8 @@ const (
 
 	quantFieldTarget = 5
 	globalScaleNum   = 4096
+
+	aqInitialAC = 0.39
 )
 
 func gammaRatioParts(v float32) (float32, float32) {
@@ -330,8 +329,22 @@ func (f *frame) adaptiveQuantField(distance, strength float32) []float32 {
 	return field
 }
 
-func (f *frame) adjustQuantField() {
+func meanMaxMixer(distance float32) float32 {
+	const (
+		limit = 1.54138
+		mul   = 0.56391
+	)
+
+	if distance <= limit {
+		return 1
+	}
+
+	return max(1-(distance-limit)*mul, 0)
+}
+
+func (f *frame) adjustQuantField(distance float32) {
 	v := f.vardct
+	mixer := meanMaxMixer(distance)
 
 	for by := range v.bh {
 		for bx := range v.bw {
@@ -347,20 +360,40 @@ func (f *frame) adjustQuantField() {
 				continue
 			}
 
-			best := v.rawQuant[pos]
+			best, mean := v.quantField[pos], float32(0)
 
 			for iy := range cy {
 				for ix := range cx {
-					best = max(best, v.rawQuant[(by+iy)*v.bw+bx+ix])
+					q := v.quantField[(by+iy)*v.bw+bx+ix]
+
+					best = max(best, q)
+					mean += q
 				}
+			}
+
+			mean /= float32(cx * cy)
+
+			if cx*cy >= 4 {
+				best = best*mixer + (1-mixer)*mean
 			}
 
 			for iy := range cy {
 				for ix := range cx {
-					v.rawQuant[(by+iy)*v.bw+bx+ix] = best
+					v.quantField[(by+iy)*v.bw+bx+ix] = best
 				}
 			}
 		}
+	}
+
+	f.quantizeField()
+}
+
+func (f *frame) quantizeField() {
+	v := f.vardct
+	inv := v.quant.invGlobalScale()
+
+	for i, s := range v.quantField {
+		v.rawQuant[i] = min(max(int32(s*inv+0.5), 1), maxRawQuant)
 	}
 }
 
@@ -371,33 +404,17 @@ func initialQuantDC(distance float32) float32 {
 	return min(aqDCQuant/dc, 50)
 }
 
-func medianOf(v []float32) float32 {
-	s := make([]float32, len(v))
-	copy(s, v)
-	slices.Sort(s)
-
-	return s[len(s)/2]
-}
-
 func (f *frame) setQuantField(distance, strength float32) {
 	v := f.vardct
 
-	field := f.flatQuantField(distance)
+	v.quantField = f.flatQuantField(distance)
 	if strength != 0 {
-		field = f.adaptiveQuantField(distance, strength)
+		v.quantField = f.adaptiveQuantField(distance, strength)
 	}
 
-	median := medianOf(field)
-
-	dev := make([]float32, len(field))
-
-	for i, s := range field {
-		dev[i] = absf(s - median)
-	}
-
-	scale := float32(globalScaleDenom) * (median - medianOf(dev)) / quantFieldTarget
 	quantDC := initialQuantDC(distance)
 
+	scale := float32(globalScaleDenom) * (aqInitialAC / distance) / quantFieldTarget
 	gs := min(max(int32(scale), 1), 1<<15)
 
 	if dc := int32(quantDC * globalScaleNum * 1.6); gs > dc {
@@ -406,11 +423,7 @@ func (f *frame) setQuantField(distance, strength float32) {
 
 	v.quant.globalScale = uint32(gs)
 
-	inv := float32(globalScaleDenom) / float32(gs)
+	v.quant.quantLF = uint32(min(quantDC*v.quant.invGlobalScale()+0.5, 1<<16))
 
-	v.quant.quantLF = uint32(min(quantDC*inv+0.5, 1<<16))
-
-	for i, s := range field {
-		v.rawQuant[i] = min(max(int32(s*inv+0.5), 1), maxRawQuant)
-	}
+	f.quantizeField()
 }
