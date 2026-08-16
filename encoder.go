@@ -188,10 +188,33 @@ func (f *frame) blockCost(s *dctScratch, t hfTransform, bx, by int, lf *[3][]flo
 const (
 	transformRateMargin   = 0.7
 	adaptiveQuantStrength = 0.25
+	adaptiveQuantEffort   = 2
 )
 
-var transformCandidates = [...]hfTransform{
-	hfDCT32X32, hfDCT32X16, hfDCT16X32, hfDCT32X8, hfDCT8X32, hfDCT16X16, hfDCT16X8, hfDCT8X16,
+var transformLadder = [...]struct {
+	shape  hfTransform
+	effort int
+}{
+	{hfDCT32X32, 4},
+	{hfDCT32X16, 5},
+	{hfDCT16X32, 5},
+	{hfDCT32X8, 6},
+	{hfDCT8X32, 6},
+	{hfDCT16X16, 3},
+	{hfDCT16X8, 7},
+	{hfDCT8X16, 7},
+}
+
+func transformCandidates(effort int) []hfTransform {
+	var out []hfTransform
+
+	for _, c := range transformLadder {
+		if c.effort <= effort {
+			out = append(out, c.shape)
+		}
+	}
+
+	return out
 }
 
 func (f *frame) regionFree(bx, by, cx, cy int) bool {
@@ -226,11 +249,19 @@ func newLFBuffers() [3][]float32 {
 	return lf
 }
 
-func (f *frame) chooseTransforms(scratch []dctScratch) {
+func (f *frame) chooseTransforms(scratch []dctScratch, candidates []hfTransform) {
 	v := f.vardct
 
 	for i := range v.transform {
 		v.transform[i] = invalidTransform
+	}
+
+	if len(candidates) == 0 {
+		for i := range v.transform {
+			v.transform[i] = uint8(hfDCT) | 128
+		}
+
+		return
 	}
 
 	rate8 := make([]float64, v.bw*v.bh)
@@ -265,7 +296,7 @@ func (f *frame) chooseTransforms(scratch []dctScratch) {
 
 				best, saving := hfDCT, 0.0
 
-				for _, t := range transformCandidates {
+				for _, t := range candidates {
 					cx, cy := t.blocks()
 
 					if !f.regionFree(x, y, cx, cy) {
@@ -503,6 +534,7 @@ type encodeParams struct {
 	distance float32
 	threads  int
 	strength float32
+	effort   int
 }
 
 func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) {
@@ -528,8 +560,15 @@ func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) 
 		return nil, ErrInvalid
 	}
 
+	effort := effortLevel(p.effort)
+	strength := p.strength
+
+	if effort < adaptiveQuantEffort {
+		strength = 0
+	}
+
 	f.fillXYB(&fwd, src, w, h)
-	f.setQuantField(p.distance, p.strength)
+	f.setQuantField(p.distance, strength)
 
 	scratch := make([]dctScratch, min(numThreads(p.threads), f.hdr.numGroups()))
 
@@ -537,7 +576,7 @@ func encodeVarDCTImage(src rowSource, w, h int, p encodeParams) ([]byte, error) 
 		scratch[i].alloc(f)
 	}
 
-	f.chooseTransforms(scratch)
+	f.chooseTransforms(scratch, transformCandidates(effort))
 	f.adjustQuantField()
 
 	body, err := f.encodeSections(scratch)
@@ -562,13 +601,31 @@ type EncodeOptions struct {
 	// Quality runs from 1 to 100, where 100 is the least lossy. Zero means
 	// DefaultQuality.
 	Quality int
+	// Effort runs from 1 to MaxEffort, spending encode time on a wider block
+	// search for a smaller file at the same quality. Zero means DefaultEffort,
+	// higher values are clamped.
+	Effort int
 	// Threads bounds the goroutines encoding one frame. Zero means GOMAXPROCS,
 	// one encodes serially.
 	Threads int
 }
 
-// DefaultQuality is the quality used when EncodeOptions.Quality is zero.
-const DefaultQuality = 90
+const (
+	// DefaultQuality is the quality used when EncodeOptions.Quality is zero.
+	DefaultQuality = 90
+	// DefaultEffort is the effort used when EncodeOptions.Effort is zero.
+	DefaultEffort = 7
+	// MaxEffort is the highest effort the encoder implements.
+	MaxEffort = 7
+)
+
+func effortLevel(e int) int {
+	if e == 0 {
+		return DefaultEffort
+	}
+
+	return min(max(e, 1), MaxEffort)
+}
 
 func encodeOptions(opts []EncodeOptions) EncodeOptions {
 	var o EncodeOptions
@@ -580,6 +637,8 @@ func encodeOptions(opts []EncodeOptions) EncodeOptions {
 	if o.Quality == 0 {
 		o.Quality = DefaultQuality
 	}
+
+	o.Effort = effortLevel(o.Effort)
 
 	return o
 }
@@ -689,6 +748,7 @@ func Encode(w io.Writer, m image.Image, opts ...EncodeOptions) error {
 		distance: qualityToDistance(o.Quality),
 		threads:  o.Threads,
 		strength: adaptiveQuantStrength,
+		effort:   o.Effort,
 	})
 	if err != nil {
 		return err

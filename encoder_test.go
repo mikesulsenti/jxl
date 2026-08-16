@@ -455,6 +455,82 @@ func TestEncodeQualityAffectsSize(t *testing.T) {
 	}
 }
 
+func TestEncodeEffort(t *testing.T) {
+	src := texturedImage(384, 256)
+
+	sizes := make(map[int]int)
+	errors := make(map[int]float64)
+
+	for _, e := range []int{-3, 0, 1, 2, 3, 4, 5, 6, 7, 40} {
+		var buf bytes.Buffer
+
+		if err := Encode(&buf, src, EncodeOptions{Effort: e}); err != nil {
+			t.Fatalf("effort %d: %v", e, err)
+		}
+
+		got, err := Decode(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			t.Fatalf("effort %d: decode gave %v", e, err)
+		}
+
+		worst := maxError(src, got)
+
+		t.Logf("effort %d: %d bytes, worst error %.5f", e, buf.Len(), worst)
+
+		sizes[e] = buf.Len()
+		errors[e] = worst
+	}
+
+	if sizes[-3] != sizes[1] {
+		t.Fatalf("effort -3 gave %d bytes, effort 1 gives %d", sizes[-3], sizes[1])
+	}
+
+	if sizes[40] != sizes[MaxEffort] {
+		t.Fatalf("effort 40 gave %d bytes, effort %d gives %d", sizes[40], MaxEffort,
+			sizes[MaxEffort])
+	}
+
+	if sizes[0] != sizes[DefaultEffort] {
+		t.Fatalf("effort 0 gave %d bytes, effort %d gives %d", sizes[0], DefaultEffort,
+			sizes[DefaultEffort])
+	}
+
+	for e := 1; e <= MaxEffort; e++ {
+		if errors[e] > 2*errors[DefaultEffort] {
+			t.Fatalf("effort %d is %.5f from the source, effort %d is %.5f",
+				e, errors[e], DefaultEffort, errors[DefaultEffort])
+		}
+	}
+
+	for _, e := range []int{2, 3, 4, 5, 6, 7} {
+		if sizes[e] >= sizes[1] {
+			t.Fatalf("effort %d gave %d bytes, no smaller than %d at effort 1",
+				e, sizes[e], sizes[1])
+		}
+	}
+}
+
+func TestTransformCandidates(t *testing.T) {
+	var prev []hfTransform
+
+	for e := 1; e <= MaxEffort; e++ {
+		got := transformCandidates(e)
+
+		for _, t2 := range prev {
+			if !slices.Contains(got, t2) {
+				t.Fatalf("effort %d dropped %v", e, t2)
+			}
+		}
+
+		prev = got
+	}
+
+	if len(prev) != len(transformLadder) {
+		t.Fatalf("effort %d searches %d shapes, the ladder has %d",
+			MaxEffort, len(prev), len(transformLadder))
+	}
+}
+
 func texturedImage(w, h int) *image.NRGBA {
 	m := image.NewNRGBA(image.Rect(0, 0, w, h))
 

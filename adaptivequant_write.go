@@ -278,6 +278,30 @@ func (f *frame) blueModulation(x, y int, out float32) float32 {
 	return sum*0.90590804735610064 + out
 }
 
+func quantFieldScale(distance float32) (mul, add float32) {
+	scale := aqACQuant / distance
+	dampen := float32(1)
+
+	if distance >= aqDampenStart {
+		dampen = max(1-(distance-aqDampenStart)/(aqDampenEnd-aqDampenStart), 0)
+	}
+
+	return scale * dampen, (1 - dampen) * 0.48 * scale
+}
+
+func (f *frame) flatQuantField(distance float32) []float32 {
+	v := f.vardct
+	mul, add := quantFieldScale(distance)
+
+	field := make([]float32, v.bw*v.bh)
+
+	for i := range field {
+		field[i] = mul + add
+	}
+
+	return field
+}
+
 func (f *frame) adaptiveQuantField(distance, strength float32) []float32 {
 	v := f.vardct
 	pw, ph := v.bw*2, v.bh*2
@@ -288,15 +312,7 @@ func (f *frame) adaptiveQuantField(distance, strength float32) []float32 {
 	f.diffPrecompute(pre, pw, ph)
 	f.fuzzyErosion(distance, pre, pw, ph, field)
 
-	scale := aqACQuant / distance
-	dampen := float32(1)
-
-	if distance >= aqDampenStart {
-		dampen = max(1-(distance-aqDampenStart)/(aqDampenEnd-aqDampenStart), 0)
-	}
-
-	mul := scale * dampen
-	add := (1 - dampen) * 0.48 * scale
+	mul, add := quantFieldScale(distance)
 
 	for by := range v.bh {
 		for bx := range v.bw {
@@ -365,7 +381,11 @@ func medianOf(v []float32) float32 {
 
 func (f *frame) setQuantField(distance, strength float32) {
 	v := f.vardct
-	field := f.adaptiveQuantField(distance, strength)
+
+	field := f.flatQuantField(distance)
+	if strength != 0 {
+		field = f.adaptiveQuantField(distance, strength)
+	}
 
 	median := medianOf(field)
 
