@@ -167,10 +167,15 @@ func FuzzBoundedStream(f *testing.F) {
 		if len(data) > 16<<10 {
 			return
 		}
-		o := Options{Level: 10, Threads: 1, FrameSizeLimit: 64 * 64, MaxWidth: 64, MaxHeight: 64, MaxFrames: 8, MaxInputBytes: 16 << 10, MaxICCBytes: 4096, MaxOutputBytes: 1 << 20}
+		o := Options{Level: 10, Threads: 1, PlanarOutput: len(data) > 0 && data[len(data)-1]&1 != 0, FrameSizeLimit: 64 * 64, MaxWidth: 64, MaxHeight: 64, MaxFrames: 8, MaxInputBytes: 16 << 10, MaxICCBytes: 4096, MaxOutputBytes: 1 << 20}
 		calls := 0
 		_, err := DecodeFloatFrames(bytes.NewReader(data), func(fr *FloatFrame) error {
 			calls++
+			for _, p := range fr.Planes {
+				if len(p) > 64*64 {
+					t.Fatal("planar output violated limits")
+				}
+			}
 			if calls > 8 || fr.Width > 64 || fr.Height > 64 || len(fr.Samples) > 64*64*259 {
 				t.Fatal("output violated limits")
 			}

@@ -177,7 +177,9 @@ func (d *decoder) checkFrameSize(w, h uint32) error {
 	if channels > 0 && uint64(w)*uint64(h) > uint64(math.MaxInt)/uint64(channels)/4 {
 		return fmt.Errorf("%w: sample allocation", ErrLimit)
 	}
-	if d.opts.MaxOutputBytes > 0 && uint64(w)*uint64(h)*uint64(channels)*4 > uint64(d.opts.MaxOutputBytes) { return fmt.Errorf("%w: float frame size",ErrLimit) }
+	if d.opts.MaxOutputBytes > 0 && uint64(w)*uint64(h)*uint64(channels)*4 > uint64(d.opts.MaxOutputBytes) {
+		return fmt.Errorf("%w: float frame size", ErrLimit)
+	}
 	lim := int64(d.opts.FrameSizeLimit)
 
 	if lim == 0 {
