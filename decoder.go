@@ -689,7 +689,9 @@ func (d *decoder) renderFrame(f *frame, channels int) ([][]float32, error) {
 	case f.hdr.doYCbCr:
 		ycbcrToRGB(planes, w, h, d.threads)
 	case m.xybEncoded:
-		d.xybToRGB(f, planes, w, h)
+		if err := d.xybToRGB(f, planes, w, h); err != nil {
+			return nil, err
+		}
 	}
 
 	if len(planes) != channels {
@@ -902,14 +904,18 @@ func ycbcrToRGB(planes [][]float32, w, h, threads int) {
 	})
 }
 
-func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) {
+func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) error {
 	p := newXYBParams(&d.hdr.transform.opsin, d.hdr.meta.tone.intensityTarget)
 	c := &d.hdr.meta.color
+	gamut, identity, ok := c.srgbGamut()
+	if !ok {
+		return ErrUnsupported
+	}
 
 	n := w * h
 	x, y, b := planes[0][:n], planes[1][:n], planes[2][:n]
 
-	srgb := !c.wantICC && !c.tf.haveGamma && c.tf.tf == tfSRGB
+	srgb := identity && !c.wantICC && !c.tf.haveGamma && c.tf.tf == tfSRGB
 
 	var k *[29][8]float32
 
@@ -957,6 +963,9 @@ func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) {
 		default:
 			for i := lo; i < hi; i++ {
 				r, g, bb := p.apply(x[i], y[i], b[i])
+				if !identity {
+					r, g, bb = gamut.apply(r, g, bb)
+				}
 
 				x[i] = c.fromLinear(r)
 				y[i] = c.fromLinear(g)
@@ -964,6 +973,7 @@ func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) {
 			}
 		}
 	})
+	return nil
 }
 
 func decodeConfig(data []byte) (image.Config, error) {
