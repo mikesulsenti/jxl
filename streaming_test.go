@@ -22,22 +22,33 @@ func TestStreamMatchesFloat(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, threads := range []int{1, 4} {
-				seen := 0
-				info, err := DecodeFloatFrames(bytes.NewReader(data), func(f *FloatFrame) error {
-					if f.Width != want.Width || f.Height != want.Height || f.Channels != want.Channels || f.Index != seen {
-						t.Fatal("frame shape/index mismatch")
+				for _, planar := range []bool{false, true} {
+					seen := 0
+					info, err := DecodeFloatFrames(bytes.NewReader(data), func(f *FloatFrame) error {
+						if f.Width != want.Width || f.Height != want.Height || f.Channels != want.Channels || f.Index != seen {
+							t.Fatal("frame shape/index mismatch")
+						}
+						samples := f.Samples
+						if planar {
+							samples = make([]float32, f.Width*f.Height*f.Channels)
+							for c, p := range f.Planes {
+								for i, v := range p {
+									samples[i*f.Channels+c] = v
+								}
+							}
+						}
+						if seen >= len(want.Frames) || !slices.Equal(samples, want.Frames[seen]) {
+							t.Fatal("frame samples differ")
+						}
+						seen++
+						return nil
+					}, Options{Level: 10, Threads: threads, PlanarOutput: planar, MaxFrames: 64, MaxInputBytes: len(data), MaxWidth: 4096, MaxHeight: 4096, MaxOutputBytes: 64 << 20, MaxICCBytes: 1 << 20})
+					if err != nil {
+						t.Fatal(err)
 					}
-					if seen >= len(want.Frames) || !slices.Equal(f.Samples, want.Frames[seen]) {
-						t.Fatal("frame samples differ")
+					if seen != len(want.Frames) || info.Width != want.Width || info.Height != want.Height {
+						t.Fatal("stream count/shape mismatch")
 					}
-					seen++
-					return nil
-				}, Options{Level: 10, Threads: threads, MaxFrames: 64, MaxInputBytes: len(data), MaxWidth: 4096, MaxHeight: 4096, MaxOutputBytes: 64 << 20, MaxICCBytes: 1 << 20})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if seen != len(want.Frames) || info.Width != want.Width || info.Height != want.Height {
-					t.Fatal("stream count/shape mismatch")
 				}
 			}
 		})

@@ -65,6 +65,9 @@ type Options struct {
 	// MaxOutputBytes bounds cumulative displayed float samples, including
 	// callbacks, before allocating another frame. Zero leaves it disabled.
 	MaxOutputBytes int
+	// PlanarOutput lets streaming callbacks borrow the decoder's colour planes
+	// directly. It avoids allocating an interleaved float frame.
+	PlanarOutput bool
 }
 
 func options(opts []Options) Options {
@@ -129,9 +132,12 @@ type StreamInfo struct {
 type FloatFrame struct {
 	Width, Height, Channels int
 	Samples                 []float32
-	Delay                   float64
-	Index                   int
-	Info                    StreamInfo
+	// Planes are orientation-correct planar samples when PlanarOutput is set;
+	// Samples is nil in that mode. Each plane contains Width*Height floats.
+	Planes [][]float32
+	Delay  float64
+	Index  int
+	Info   StreamInfo
 }
 
 // DecodeFloatFrames decodes displayed frames one at a time. It retains only

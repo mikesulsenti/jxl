@@ -32,6 +32,7 @@ type decoder struct {
 	preview       bool
 	emit          func(*FloatFrame) error
 	streamSamples []float32
+	streamPlanes  [][]float32
 	decodedFrames int
 	outputBytes   uint64
 }
@@ -176,6 +177,7 @@ func (d *decoder) checkFrameSize(w, h uint32) error {
 	if channels > 0 && uint64(w)*uint64(h) > uint64(math.MaxInt)/uint64(channels)/4 {
 		return fmt.Errorf("%w: sample allocation", ErrLimit)
 	}
+	if d.opts.MaxOutputBytes > 0 && uint64(w)*uint64(h)*uint64(channels)*4 > uint64(d.opts.MaxOutputBytes) { return fmt.Errorf("%w: float frame size",ErrLimit) }
 	lim := int64(d.opts.FrameSizeLimit)
 
 	if lim == 0 {
@@ -455,51 +457,77 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 			}
 			d.outputBytes += bytes
 			var interleaved []float32
-			if d.emit != nil {
-				if cap(d.streamSamples) < w*h*channels {
-					d.streamSamples = make([]float32, w*h*channels)
-				}
-				interleaved = d.streamSamples[:w*h*channels]
-			} else {
-				interleaved = make([]float32, w*h*channels)
-			}
-
-			if m.orient == orIdentity {
-				overRows(d.threads, h, func(y0, y1 int) {
-					lo, hi := y0*w, y1*w
-
-					if channels == 1 {
-						copy(interleaved[lo:hi], result.planes[0][lo:hi])
-
-						return
+			var displayPlanes [][]float32
+			if d.emit != nil && d.opts.PlanarOutput {
+				displayPlanes = result.planes
+				if m.orient != orIdentity {
+					if d.streamPlanes == nil {
+						d.streamPlanes = make([][]float32, channels)
 					}
-
-					for i := lo; i < hi; i++ {
-						dst := interleaved[i*channels : (i+1)*channels]
-
-						for c, p := range result.planes {
-							dst[c] = p[i]
+					for c := range channels {
+						if d.streamPlanes[c] == nil {
+							d.streamPlanes[c] = make([]float32, w*h)
 						}
 					}
-				})
-			} else {
-				overRows(d.threads, h, func(y0, y1 int) {
-					for y := y0; y < y1; y++ {
-						for x := range w {
-							ox, oy := m.orient.displayPixel(x, y, w, h)
-							dst := (oy*ow + ox) * channels
-
-							for c := range channels {
-								interleaved[dst+c] = result.planes[c][y*w+x]
+					displayPlanes = d.streamPlanes
+					overRows(d.threads, h, func(y0, y1 int) {
+						for y := y0; y < y1; y++ {
+							for x := range w {
+								ox, oy := m.orient.displayPixel(x, y, w, h)
+								for c := range channels {
+									displayPlanes[c][oy*ow+ox] = result.planes[c][y*w+x]
+								}
 							}
 						}
+					})
+				}
+			} else {
+				if d.emit != nil {
+					if cap(d.streamSamples) < w*h*channels {
+						d.streamSamples = make([]float32, w*h*channels)
 					}
-				})
+					interleaved = d.streamSamples[:w*h*channels]
+				} else {
+					interleaved = make([]float32, w*h*channels)
+				}
+
+				if m.orient == orIdentity {
+					overRows(d.threads, h, func(y0, y1 int) {
+						lo, hi := y0*w, y1*w
+
+						if channels == 1 {
+							copy(interleaved[lo:hi], result.planes[0][lo:hi])
+
+							return
+						}
+
+						for i := lo; i < hi; i++ {
+							dst := interleaved[i*channels : (i+1)*channels]
+
+							for c, p := range result.planes {
+								dst[c] = p[i]
+							}
+						}
+					})
+				} else {
+					overRows(d.threads, h, func(y0, y1 int) {
+						for y := y0; y < y1; y++ {
+							for x := range w {
+								ox, oy := m.orient.displayPixel(x, y, w, h)
+								dst := (oy*ow + ox) * channels
+
+								for c := range channels {
+									interleaved[dst+c] = result.planes[c][y*w+x]
+								}
+							}
+						}
+					})
+				}
 			}
 
 			delay := f.hdr.delay(&m.anim)
 			if d.emit != nil {
-				frame := &FloatFrame{Width: ow, Height: oh, Channels: channels, Samples: interleaved, Delay: delay, Index: len(delays), Info: d.streamInfo()}
+				frame := &FloatFrame{Width: ow, Height: oh, Channels: channels, Samples: interleaved, Planes: displayPlanes, Delay: delay, Index: len(delays), Info: d.streamInfo()}
 				if err := d.emit(frame); err != nil {
 					return nil, nil, 0, err
 				}
