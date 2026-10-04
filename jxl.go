@@ -121,6 +121,11 @@ const configChunk = 1 << 12
 
 // DecodeConfig reads the dimensions and color model without decoding pixels.
 func DecodeConfig(r io.Reader) (image.Config, error) {
+	return DecodeConfigWithOptions(r)
+}
+
+// DecodeConfigWithOptions reads a header using the caller-selected codestream level.
+func DecodeConfigWithOptions(r io.Reader, opts ...Options) (image.Config, error) {
 	var buf []byte
 
 	for size := configChunk; ; size *= 4 {
@@ -130,7 +135,7 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 		n, err := io.ReadFull(r, buf[have:])
 		buf = buf[:have+n]
 
-		cfg, cerr := decodeConfig(buf)
+		cfg, cerr := decodeConfigOptions(buf, options(opts))
 		if cerr == nil {
 			return cfg, nil
 		}

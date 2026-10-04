@@ -827,7 +827,11 @@ func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) {
 }
 
 func decodeConfig(data []byte) (image.Config, error) {
-	d, err := newSourceDecoder(newSource(nil, data), options(nil), true)
+	return decodeConfigOptions(data, options(nil))
+}
+
+func decodeConfigOptions(data []byte, o Options) (image.Config, error) {
+	d, err := newSourceDecoder(newSource(nil, data), o, true)
 	if err != nil {
 		return image.Config{}, err
 	}
