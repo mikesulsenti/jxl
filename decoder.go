@@ -125,6 +125,11 @@ func newSourceDecoder(s *source, o Options, partial bool) (*decoder, error) {
 				if err := d.checkFrameSize(hdr.size.xsize, hdr.size.ysize); err != nil {
 					return nil, err
 				}
+				if hdr.meta.orient.transposing() {
+					if err := d.checkFrameSize(hdr.size.ysize, hdr.size.xsize); err != nil {
+						return nil, err
+					}
+				}
 			}
 
 			if !partial && hdr.meta.color.wantICC {
@@ -907,6 +912,11 @@ func ycbcrToRGB(planes [][]float32, w, h, threads int) {
 func (d *decoder) xybToRGB(f *frame, planes [][]float32, w, h int) error {
 	p := newXYBParams(&d.hdr.transform.opsin, d.hdr.meta.tone.intensityTarget)
 	c := &d.hdr.meta.color
+	// PQ/HLG require an intensity-aware HDR transform. Returning unchanged
+	// linear samples while labelling them PQ/HLG is an incorrect success.
+	if !c.wantICC && !c.tf.haveGamma && (c.tf.tf == tfPQ || c.tf.tf == tfHLG) {
+		return ErrUnsupported
+	}
 	gamut, identity, ok := c.srgbGamut()
 	if !ok {
 		return ErrUnsupported
@@ -987,6 +997,11 @@ func decodeConfigOptions(data []byte, o Options) (image.Config, error) {
 	}
 	if err := d.checkFrameSize(d.hdr.size.xsize, d.hdr.size.ysize); err != nil {
 		return image.Config{}, err
+	}
+	if d.hdr.meta.orient.transposing() {
+		if err := d.checkFrameSize(d.hdr.size.ysize, d.hdr.size.xsize); err != nil {
+			return image.Config{}, err
+		}
 	}
 
 	w, h := int(d.hdr.size.xsize), int(d.hdr.size.ysize)

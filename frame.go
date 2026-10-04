@@ -68,6 +68,11 @@ func (d *decoder) readFrameHeader(r *bitReader) (*frame, error) {
 	if err := d.checkFrameSize(uint32(uw), uint32(uh)); err != nil {
 		return nil, err
 	}
+	if d.hdr.meta.orient.transposing() {
+		if err := d.checkFrameSize(uint32(uh), uint32(uw)); err != nil {
+			return nil, err
+		}
+	}
 
 	f.toc.read(r, f.hdr.numTOCEntries())
 

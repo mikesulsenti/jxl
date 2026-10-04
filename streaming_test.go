@@ -264,4 +264,19 @@ func TestAnimationStreamBoundsAndOrientation(t *testing.T) {
 	if !errors.Is(err, ErrLimit) || calls != 1 {
 		t.Fatalf("frame limit calls%d err%v", calls, err)
 	}
+	if _, err := DecodeFloatFrames(bytes.NewReader(data), func(*FloatFrame) error { return nil }, Options{MaxHeight: 7}); !errors.Is(err, ErrLimit) {
+		t.Fatalf("rotated output height error%v", err)
+	}
+}
+
+func TestUnsupportedXYBHDR(t *testing.T) {
+	for _, tf := range []transferFunction{tfPQ, tfHLG} {
+		d := decoder{threads: 1}
+		d.hdr.meta.color = defaultColorEncoding()
+		d.hdr.meta.color.tf.tf = tf
+		d.hdr.meta.tone = defaultToneMapping()
+		if err := d.xybToRGB(&frame{}, [][]float32{{0}, {0}, {0}}, 1, 1); !errors.Is(err, ErrUnsupported) {
+			t.Fatalf("transfer%d returned%v", tf, err)
+		}
+	}
 }
