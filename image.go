@@ -49,6 +49,10 @@ func (d *decoder) toImage(f *Float, frame int) (image.Image, error) {
 	d.renderSpot(f, frame)
 
 	deep := m.depth.bitsPerSample > 8 || m.depth.floatSample
+	if alpha >= 0 {
+		d := m.extraChannels[alpha].depth
+		deep = deep || d.bitsPerSample > 8 || d.floatSample
+	}
 
 	rect := image.Rect(0, 0, f.Width, f.Height)
 	src := f.Frames[frame]
