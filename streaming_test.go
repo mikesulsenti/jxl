@@ -3,6 +3,8 @@ package jxl
 import (
 	"bytes"
 	"errors"
+	"image"
+	"image/color"
 	"os"
 	"path/filepath"
 	"slices"
@@ -149,6 +151,13 @@ func TestLevel10Config(t *testing.T) {
 }
 
 func FuzzBoundedStream(f *testing.F) {
+	for _, src := range []image.Image{image.NewGray(image.Rect(0, 0, 1, 1)), image.NewNRGBA(image.Rect(0, 0, 17, 13))} {
+		var b bytes.Buffer
+		if err := Encode(&b, src, EncodeOptions{Lossless: true}); err != nil {
+			f.Fatal(err)
+		}
+		f.Add(b.Bytes())
+	}
 	for _, path := range []string{"testdata/streams/dct_small.jxl", "testdata/streams/rgb_lossless.jxl"} {
 		if data, err := os.ReadFile(path); err == nil {
 			f.Add(data)
@@ -171,4 +180,83 @@ func FuzzBoundedStream(f *testing.F) {
 			t.Fatal("success without frames")
 		}
 	})
+}
+
+func twoFrameAnimation(t *testing.T) []byte {
+	t.Helper()
+	src := image.NewNRGBA(image.Rect(0, 0, 8, 7))
+	for y := 0; y < 7; y++ {
+		for x := 0; x < 8; x++ {
+			src.SetNRGBA(x, y, color.NRGBA{uint8(x * 31), uint8(y * 35), 127, 255})
+		}
+	}
+	var b bytes.Buffer
+	if err := Encode(&b, src, EncodeOptions{Lossless: true}); err != nil {
+		t.Fatal(err)
+	}
+	d, err := newBytesDecoder(b.Bytes(), options(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newBitReader(d.src.window())
+	r.skip(d.used)
+	f, err := d.readFrameHeader(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := d.src.window()[r.pos()/8 : r.pos()/8+int(f.toc.offsets[len(f.toc.offsets)-1])]
+	d.hdr.meta.haveAnimation = true
+	d.hdr.meta.anim = animation{tpsNumerator: 100, tpsDenominator: 1, numLoops: 2}
+	d.hdr.meta.orient = orRotate90CW
+	var w bitWriter
+	d.hdr.write(&w)
+	for i := 0; i < 2; i++ {
+		f.hdr.isLast = i == 1
+		f.hdr.duration = 2
+		f.hdr.write(&w, &d.hdr.meta, d.hdr.size.xsize, d.hdr.size.ysize)
+		f.toc.write(&w)
+		w.writeBytes(payload)
+	}
+	if err := w.err(); err != nil {
+		t.Fatal(err)
+	}
+	return w.bytes()
+}
+
+func TestAnimationStreamBoundsAndOrientation(t *testing.T) {
+	data := twoFrameAnimation(t)
+	want, err := DecodeFloat(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, planar := range []bool{false, true} {
+		calls := 0
+		info, err := DecodeFloatFrames(bytes.NewReader(data), func(f *FloatFrame) error {
+			if f.Delay != 0.02 || f.Info.Loops != 2 || f.Width != 7 || f.Height != 8 {
+				t.Fatal("animation metadata mismatch")
+			}
+			samples := f.Samples
+			if planar {
+				samples = make([]float32, f.Width*f.Height*f.Channels)
+				for c, p := range f.Planes {
+					for i, v := range p {
+						samples[i*f.Channels+c] = v
+					}
+				}
+			}
+			if !slices.Equal(samples, want.Frames[calls]) {
+				t.Fatal("oriented frame differs")
+			}
+			calls++
+			return nil
+		}, Options{PlanarOutput: planar, MaxFrames: 2, Threads: 4})
+		if err != nil || calls != 2 || info.Loops != 2 {
+			t.Fatalf("result calls%d info%+v err%v", calls, info, err)
+		}
+	}
+	calls := 0
+	_, err = DecodeFloatFrames(bytes.NewReader(data), func(*FloatFrame) error { calls++; return nil }, Options{MaxFrames: 1})
+	if !errors.Is(err, ErrLimit) || calls != 1 {
+		t.Fatalf("frame limit calls%d err%v", calls, err)
+	}
 }
