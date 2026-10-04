@@ -68,6 +68,7 @@ func (d *decoder) toImage(f *Float, frame int) (image.Image, error) {
 	}
 
 	n := f.Channels
+	associated := alpha >= 0 && m.extraChannels[alpha].alphaAssociated
 
 	switch {
 	case gray && alpha < 0 && !deep:
@@ -114,10 +115,17 @@ func (d *decoder) toImage(f *Float, frame int) (image.Image, error) {
 
 				for x := range f.Width {
 					o, q := x*n, p[x*4:]
-
-					q[0] = to8(row[o+ci[0]])
-					q[1] = to8(row[o+ci[1]])
-					q[2] = to8(row[o+ci[2]])
+					for c := range 3 {
+						v := row[o+ci[c]]
+						if associated {
+							if a := row[o+ai]; a > 0 {
+								v /= a
+							} else {
+								v = 0
+							}
+						}
+						q[c] = to8(v)
+					}
 
 					q[3] = 255
 					if ai >= 0 {
@@ -141,7 +149,15 @@ func (d *decoder) toImage(f *Float, frame int) (image.Image, error) {
 				o, q := x*n, p[x*8:]
 
 				for c := range 3 {
-					v := to16(row[o+ci[c]])
+					sample := row[o+ci[c]]
+					if associated {
+						if a := row[o+ai]; a > 0 {
+							sample /= a
+						} else {
+							sample = 0
+						}
+					}
+					v := to16(sample)
 					q[c*2] = uint8(v >> 8)
 					q[c*2+1] = uint8(v)
 				}
