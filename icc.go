@@ -117,7 +117,15 @@ func iccContext(out []byte, b1, b2 uint8) int {
 }
 
 func readICCStream(r *bitReader) []byte {
+	return readICCStreamLimited(r, 0)
+}
+
+func readICCStreamLimited(r *bitReader, limit int) []byte {
 	n := r.u64()
+	if limit > 0 && n > uint64(limit) {
+		r.setErr(ErrLimit)
+		return nil
+	}
 	if n > 1<<24 || int(n) > r.left() {
 		r.setErr(ErrInvalid)
 

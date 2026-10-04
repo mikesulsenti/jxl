@@ -1,6 +1,7 @@
 package jxl
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"io"
@@ -26,13 +27,48 @@ type decoder struct {
 	preCT    [4]*refFrame
 	lfFrames [4]*refFrame
 
-	visible    int
-	nonvisible int
-	preview    bool
+	visible       int
+	nonvisible    int
+	preview       bool
+	emit          func(*FloatFrame) error
+	streamSamples []float32
+	decodedFrames int
+	outputBytes   uint64
 }
 
 func newDecoder(r io.Reader, o Options) (*decoder, error) {
+	if o.MaxWidth < 0 || o.MaxHeight < 0 || o.MaxFrames < 0 || o.MaxInputBytes < 0 || o.MaxICCBytes < 0 || o.MaxOutputBytes < 0 {
+		return nil, fmt.Errorf("%w: negative decode limit", ErrLimit)
+	}
+	if o.MaxInputBytes > 0 {
+		r = &inputLimitedReader{r: r, remaining: int64(o.MaxInputBytes)}
+	}
 	return newSourceDecoder(newSource(r, nil), o, false)
+}
+
+type inputLimitedReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (r *inputLimitedReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.remaining == 0 {
+		var extra [1]byte
+		n, err := r.r.Read(extra[:])
+		if n > 0 {
+			return 0, fmt.Errorf("%w: compressed input", ErrLimit)
+		}
+		return 0, err
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.r.Read(p)
+	r.remaining -= int64(n)
+	return n, err
 }
 
 func newBytesDecoder(data []byte, o Options) (*decoder, error) {
@@ -84,11 +120,23 @@ func newSourceDecoder(s *source, o Options, partial bool) (*decoder, error) {
 		err := br.err()
 		if err == nil {
 			d.hdr = hdr
+			if !partial {
+				if err := d.checkFrameSize(hdr.size.xsize, hdr.size.ysize); err != nil {
+					return nil, err
+				}
+			}
 
 			if !partial && hdr.meta.color.wantICC {
-				encoded := readICCStream(br)
+				encoded := readICCStreamLimited(br, d.opts.MaxICCBytes)
 
 				if err = br.err(); err == nil {
+					if d.opts.MaxICCBytes > 0 {
+						s := iccStream{data: encoded}
+						n, ok := s.varint()
+						if ok && n > uint64(d.opts.MaxICCBytes) {
+							return nil, fmt.Errorf("%w: ICC profile", ErrLimit)
+						}
+					}
 					profile, ok := decodeICC(encoded)
 					if !ok {
 						return nil, ErrInvalid
@@ -121,6 +169,13 @@ func newSourceDecoder(s *source, o Options, partial bool) (*decoder, error) {
 }
 
 func (d *decoder) checkFrameSize(w, h uint32) error {
+	if d.opts.MaxWidth > 0 && uint64(w) > uint64(d.opts.MaxWidth) || d.opts.MaxHeight > 0 && uint64(h) > uint64(d.opts.MaxHeight) {
+		return fmt.Errorf("%w: dimensions", ErrLimit)
+	}
+	channels := d.hdr.meta.colorChannels() + len(d.hdr.meta.extraChannels)
+	if channels > 0 && uint64(w)*uint64(h) > uint64(math.MaxInt)/uint64(channels)/4 {
+		return fmt.Errorf("%w: sample allocation", ErrLimit)
+	}
 	lim := int64(d.opts.FrameSizeLimit)
 
 	if lim == 0 {
@@ -203,6 +258,36 @@ func (d *decoder) colorInfo() ColorInfo {
 		info.Matrix = 2
 	}
 
+	return info
+}
+
+func (d *decoder) streamInfo() StreamInfo {
+	m := &d.hdr.meta
+	w, h := int(d.hdr.size.xsize), int(d.hdr.size.ysize)
+	if m.orient.transposing() {
+		w, h = h, w
+	}
+	a := m.alphaIndex()
+	assoc := false
+	if a >= 0 {
+		assoc = m.extraChannels[a].alphaAssociated
+		a += m.colorChannels()
+	}
+	loops := 0
+	if m.haveAnimation {
+		loops = int(m.anim.numLoops)
+	}
+	info := StreamInfo{Width: w, Height: h, Channels: m.colorChannels() + len(m.extraChannels), BitDepth: int(m.depth.bitsPerSample), AlphaChannel: a, AlphaPremultiplied: assoc, XYBEncoded: m.xybEncoded, IntensityTarget: m.tone.intensityTarget, Loops: loops, Color: d.colorInfo(), WhitePoint: uint32(m.color.white)}
+	if ai := m.alphaIndex(); ai >= 0 {
+		info.BitDepth = max(info.BitDepth, int(m.extraChannels[ai].depth.bitsPerSample))
+	}
+	info.WhiteXY = [2]float64{float64(m.color.whiteXY.x) * 1e-6, float64(m.color.whiteXY.y) * 1e-6}
+	for i, p := range m.color.customPrim {
+		info.PrimariesXY[i] = [2]float64{float64(p.x) * 1e-6, float64(p.y) * 1e-6}
+	}
+	if m.color.tf.haveGamma {
+		info.Gamma = float64(m.color.tf.gamma) * 1e-7
+	}
 	return info
 }
 
@@ -298,10 +383,14 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 	}
 
 	for {
+		if d.opts.MaxFrames > 0 && d.decodedFrames >= d.opts.MaxFrames {
+			return nil, nil, 0, fmt.Errorf("%w: frame count", ErrLimit)
+		}
 		f, err := d.nextFrame()
 		if err != nil {
 			return nil, nil, 0, err
 		}
+		d.decodedFrames++
 
 		if f.hdr.isVisible() {
 			d.visible++
@@ -360,7 +449,20 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 		}
 
 		if f.hdr.isLast || f.hdr.duration > 0 {
-			interleaved := make([]float32, w*h*channels)
+			bytes := uint64(w) * uint64(h) * uint64(channels) * 4
+			if d.opts.MaxOutputBytes > 0 && (bytes > uint64(d.opts.MaxOutputBytes) || d.outputBytes > uint64(d.opts.MaxOutputBytes)-bytes) {
+				return nil, nil, 0, fmt.Errorf("%w: float output", ErrLimit)
+			}
+			d.outputBytes += bytes
+			var interleaved []float32
+			if d.emit != nil {
+				if cap(d.streamSamples) < w*h*channels {
+					d.streamSamples = make([]float32, w*h*channels)
+				}
+				interleaved = d.streamSamples[:w*h*channels]
+			} else {
+				interleaved = make([]float32, w*h*channels)
+			}
 
 			if m.orient == orIdentity {
 				overRows(d.threads, h, func(y0, y1 int) {
@@ -395,8 +497,16 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 				})
 			}
 
-			out.Frames = append(out.Frames, interleaved)
-			delays = append(delays, f.hdr.delay(&m.anim))
+			delay := f.hdr.delay(&m.anim)
+			if d.emit != nil {
+				frame := &FloatFrame{Width: ow, Height: oh, Channels: channels, Samples: interleaved, Delay: delay, Index: len(delays), Info: d.streamInfo()}
+				if err := d.emit(frame); err != nil {
+					return nil, nil, 0, err
+				}
+			} else {
+				out.Frames = append(out.Frames, interleaved)
+			}
+			delays = append(delays, delay)
 		}
 
 		d.release(result, nil)
@@ -406,7 +516,7 @@ func (d *decoder) decodeFrames() (*Float, []float64, int, error) {
 		}
 	}
 
-	if len(out.Frames) == 0 {
+	if len(delays) == 0 {
 		return nil, nil, 0, ErrInvalid
 	}
 
@@ -833,6 +943,9 @@ func decodeConfig(data []byte) (image.Config, error) {
 func decodeConfigOptions(data []byte, o Options) (image.Config, error) {
 	d, err := newSourceDecoder(newSource(nil, data), o, true)
 	if err != nil {
+		return image.Config{}, err
+	}
+	if err := d.checkFrameSize(d.hdr.size.xsize, d.hdr.size.ysize); err != nil {
 		return image.Config{}, err
 	}
 

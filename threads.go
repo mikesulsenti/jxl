@@ -1,6 +1,7 @@
 package jxl
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -28,24 +29,44 @@ func overRows(n, rows int, fn func(y0, y1 int)) {
 	chunk := divCeil(rows, n)
 
 	var wg sync.WaitGroup
+	panics := make([]any, divCeil(rows, chunk))
 
 	for y0 := 0; y0 < rows; y0 += chunk {
 		wg.Add(1)
 
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if p := recover(); p != nil {
+					panics[y0/chunk] = p
+				}
+			}()
 
 			fn(y0, min(y0+chunk, rows))
 		}()
 	}
 
 	wg.Wait()
+	for _, p := range panics {
+		if p != nil {
+			panic(p)
+		}
+	}
+}
+
+func safeTask(fn func(worker, task int) error, worker, task int) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("%w: decoder worker panic", ErrInvalid)
+		}
+	}()
+	return fn(worker, task)
 }
 
 func overTasks(n, tasks int, fn func(worker, task int) error) error {
 	if n <= 1 || tasks <= 1 {
 		for i := range tasks {
-			if err := fn(0, i); err != nil {
+			if err := safeTask(fn, 0, i); err != nil {
 				return err
 			}
 		}
@@ -80,7 +101,7 @@ func overTasks(n, tasks int, fn func(worker, task int) error) error {
 					return
 				}
 
-				if errs[i] = fn(w, i); errs[i] != nil {
+				if errs[i] = safeTask(fn, w, i); errs[i] != nil {
 					bad.Store(true)
 
 					return
